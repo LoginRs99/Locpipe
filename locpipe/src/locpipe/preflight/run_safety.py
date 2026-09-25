@@ -92,8 +92,6 @@ def sweep_orphaned_agy_artifacts(max_age_s: int = 3600) -> Dict[str, int]:
     summaries_db = home_cli / "conversation_summaries.db"
 
     def _is_locpipe_session_dir(s_dir: Path) -> bool:
-        if "locpipe" in s_dir.name.lower():
-            return True
         transcript = s_dir / ".system_generated" / "logs" / "transcript.jsonl"
         if transcript.exists():
             try:
@@ -102,19 +100,17 @@ def sweep_orphaned_agy_artifacts(max_age_s: int = 3600) -> Dict[str, int]:
                         line = f.readline()
                         if not line:
                             break
-                        if "locpipe_agy_prompt_" in line or "locpipe" in line.lower():
+                        if "locpipe_agy_prompt_" in line:
                             return True
             except OSError:
                 pass
         return False
 
     def _is_locpipe_db(db_p: Path) -> bool:
-        if "locpipe" in db_p.name.lower():
-            return True
         try:
             with open(db_p, "rb") as f:
                 chunk = f.read(65536)
-                if b"locpipe_agy_prompt_" in chunk or b"locpipe" in chunk.lower():
+                if b"locpipe_agy_prompt_" in chunk:
                     return True
         except OSError:
             pass
