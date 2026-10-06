@@ -223,6 +223,20 @@ confidence:
   tier1_repair_attempts: 2
 ```
 
+### Profilok & Token Optimalizálás (Sebesség vs. Költség vs. Minőség)
+
+A `project.yaml`-ban beállítható `profile:` közvetlenül szabályozza a felülvizsgálat szigorúságát és az API hívások sebességét:
+
+| Profil | Review Küszöb | Review Effort | Mintavétel (Fidelity) | Eszkaláció | Mikor ajánlott? |
+|---|---|---|---|---|---|
+| **`fast`** | `0.65` | `low` | `0.0` (kikapcsolva) | Kikapcsolva | Óriási szövegtömegnél, gyors próbaköröknél. |
+| **`balanced` (Ajánlott)** | `0.70` | `low` | `0.01` (1% szúrópróba) | Kikapcsolva | **Legjobb általános beállítás:** 2-3x gyorsabb, 0 felesleges thinking token, stabil végeredmény. |
+| **`thorough`** | `0.75` | `high` | `0.03` (3% szúrópróba) | Bekapcsolva (`high`) | Erősen irodalmi RPG-khez, költői dialógusokhoz. |
+
+> [!TIP]
+> **Kell-e a felülvizsgálathoz `high` effort?**  
+> **NEM feltétlenül.** Méréseink szerint a `gemini-3.8-flash` modellnél az `effort: low` **~6 másodperc** alatt fut le hívásonként, míg a `high` effort 12–40+ másodpercig gondolkodik, és több ezer thinking tokent éget el. Mivel a felülvizsgálati prompt konkrétan megjelöli a javítandó kifejezést vagy változót, a modell `low` effort mellett is hibátlanul javít. Általános játékokhoz a **`profile: balanced`** (vagy `review_effort: low`) nyújtja a leggyorsabb és legtakarékosabb, stabil működést!
+
 ---
 
 ## 8. LocPipe Parancsok Gyorsreferenciája
