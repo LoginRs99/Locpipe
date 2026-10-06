@@ -58,26 +58,56 @@ locpipe verify --project "locpipe/projects/<Project Name>"
 
 ---
 
-## 2. Recommended LLM Architectures by Task
+## 2. Production LLM Engine & Future Architecture
 
-Choose the optimal LLM architecture based on task complexity, privacy requirements, and operational constraints:
+### Current Production Engine: Google Gemini 3.8 Flash
+In production, GameStringer and LocPipe use **Google Gemini 3.8 Flash** via the hardened Antigravity CLI provider (`antigravity_cli`). Local AI models (such as Ollama, DeepSeek, or Qwen) are **not currently used in active production**.
 
-| Task Type | Recommended Models | Key Strengths | Configuration Notes |
-|---|---|---|---|
-| **Bulk Batch Translation (Fast & Economical)** | **Gemini 2.5 / 3.0 Flash**<br/>`gemini-3.8-flash` | Ultra-low latency, large context window, zero truncation retries. | `effort: low`<br/>`batch_size: 200` |
-| **Complex Lore, Cutscenes & Creative Dialogue** | **DeepSeek-V3**<br/>**DeepSeek-R1**<br/>**Claude 3.5 Sonnet** | Deep semantic reasoning, natural dialogue rhythm, zero calques/idiom translations into Hungarian/Japanese. | Local via vLLM/Ollama or API.<br/>`effort: high` |
-| **High-Density UI, Menus & Code Placeholders** | **Qwen-2.5-72B-Instruct**<br/>**Qwen-2.5-Coder-32B** | Outstanding ASCII code preservation, strict JSON schema compliance, zero tag hallucination. | Local via vLLM/Ollama.<br/>`batch_size: 100-150` |
-| **Intelligent Review & Escalation Repair** | **Gemini Pro**<br/>**DeepSeek-R1**<br/>**Claude 3.5 Sonnet** | Surgical precision for repairing flagged items without modifying unaffected surrounding text. | `review_effort: high`<br/>`review_batch_size: 25` |
+| Task Role | Model | Effort Level | Batch Size | Rationale |
+|---|---|---|---|---|
+| **Bulk Batch Translation** | `gemini-3.8-flash` | `effort: low` | `batch_size: 200` | Ultra-fast throughput, wide context window, zero token truncation, cost-effective. |
+| **Review & Automated Repair** | `gemini-3.8-flash` | `effort: high` | `review_batch_size: 25` | Increased reasoning depth for fixing flagged token errors, length limits, or tone mismatches. |
 
-### Using Local Open-Weight Models (DeepSeek / Qwen)
-For air-gapped or cost-free game localization, deploy DeepSeek or Qwen via an OpenAI-compatible local server (vLLM, Ollama, LM Studio):
+Standard `project.yaml` provider configuration:
 ```yaml
 provider:
-  name: openai_compatible   # or custom provider adapter
-  base_url: "http://localhost:11434/v1"
-  model: "deepseek-r1:32b"  # or "qwen2.5:72b"
-  max_output_tokens: 8192
+  name: antigravity_cli
+  model: gemini-3.8-flash
+  effort: low
+  review_model: gemini-3.8-flash
+  review_effort: high
+  mode: sync
+  max_concurrency: 2
 ```
+
+---
+
+### Future Extensibility: Is Local AI Support Built-In?
+**Yes, the architecture is designed from the ground up to support local models in the future.**
+
+The core pipeline (`pipeline.py`, `batcher.py`, `dedupe.py`, `checkpoint.py`, `validators/`) is completely decoupled from any specific LLM vendor. It interacts strictly with an abstract interface defined in `locpipe/src/locpipe/providers/base.py`:
+
+```python
+class TranslationProvider(ABC):
+    @abstractmethod
+    async def complete(
+        self,
+        system_prompt: str,
+        user_payload: str,
+        *,
+        max_tokens: int,
+        effort: Optional[str] = None,
+        response_format: str = "json",
+    ) -> str:
+        """Prompt in, raw JSON string out."""
+```
+
+#### How to Add Local AI Models in the Future:
+To enable a local model (such as DeepSeek-R1 or Qwen-2.5 running locally in Ollama, LM Studio, or vLLM), only two small steps are required:
+1. Implement a new subclass (e.g. `providers/openai_compatible.py`) implementing `complete()` using standard HTTP POST requests to `http://localhost:11434/v1/chat/completions`.
+2. Register the provider name in `cli.py` and `config.py`.
+
+All prompt building, engine token masking, retry loops, translation memory caching, format adapters, and post-merge validation will work automatically with zero changes to pipeline code.
 
 ---
 
