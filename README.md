@@ -65,7 +65,7 @@ pip install -e .
 # Launch Desktop GUI
 gamestringer-gui
 
-# Run automated tests (190 tests, 100% pass)
+# Run automated tests (221 tests, 100% pass)
 pytest
 ```
 
@@ -79,9 +79,9 @@ pytest
 
 ---
 
-## 🖥️ Desktop GUI Tabs (`gamestringer-gui`)
+## 🖥️ Desktop GUI Tabs (`gamestringer-gui` or `gamestringer gui`)
 
-1. **📁 Projects Tab**: List, scaffold, and configure `project.yaml` files (Type, languages, format adapters, batch globs, character replacements, category rules).
+1. **📁 Projects Tab**: List, scaffold, and configure `project.yaml` files (Type, languages, format adapters, batch globs, character replacements, category rules, P2 batch output token caps, P13 naturalness gating).
 2. **🔍 Preflight & Fixes Tab**: Run Hungarian font compatibility checks on Unity/IL2CPP assets and recalculate Addressables `catalog.json` CRC32 checksums.
 3. **🔇 Audit Noise Tab**: Run `locpipe audit` to view translatable text vs. engine noise, and one-click append exclusion patterns to `project.yaml`.
 4. **🚀 Plan & Run Tab**: Run dry pre-flight token estimates (`locpipe plan`) and execute live Antigravity CLI translation (`locpipe run`) with real-time log streaming.
@@ -90,34 +90,41 @@ pytest
 
 ## ⚙️ CLI Reference
 
-### LocPipe CLI (`locpipe`)
+### Unified GameStringer CLI (`gamestringer`)
+`gamestringer` provides a single unified entry point for all localization pipeline tools and preflight utilities:
+
 ```bash
-# Scaffold a new project (Game or Software, any language pair)
-locpipe init <project_name> [--type game|software] [--source en] [--target hu] [--format generic_kv]
+# Launch Desktop GUI
+gamestringer gui
 
 # Pre-flight plan and token estimate (dry run, 0 API tokens)
-locpipe plan --project projects/<project_name>
+gamestringer plan --project "locpipe/projects/<project_name>"
 
 # Audit extraction noise and format excludes (no LLM calls)
-locpipe audit --project projects/<project_name>
+gamestringer audit --project "locpipe/projects/<project_name>"
 
 # Run translation pipeline with Antigravity CLI
-locpipe run --project projects/<project_name> [--limit N] [--max-api-calls N]
+gamestringer run --project "locpipe/projects/<project_name>" [--limit N] [--max-api-calls N]
 
-# Verify format integrity post-translation
-locpipe verify --project projects/<project_name>
+# Verify post-run merge integrity
+gamestringer verify --project "locpipe/projects/<project_name>"
 
-# AI resource bootstrapping from Translation Memory (TM)
-locpipe bootstrap-resources --project projects/<project_name>
-```
-
-### GameStringer Utilities (`gamestringer`)
-```bash
 # Check Unity/IL2CPP font assets for Hungarian ő/ű glyph support
 gamestringer check-fonts --input "path/to/game_dir" --engine unity
 
 # Recalculate CRC32 checksums for modified AssetBundles and update catalog.json
 gamestringer fix-catalog --input "path/to/game_dir"
+```
+
+### Standalone LocPipe CLI (`locpipe`)
+All pipeline commands can also be run directly via `locpipe`:
+```bash
+locpipe init <project_name> [--type game|software] [--source en] [--target hu] [--format generic_kv]
+locpipe plan --project "locpipe/projects/<project_name>"
+locpipe audit --project "locpipe/projects/<project_name>"
+locpipe run --project "locpipe/projects/<project_name>"
+locpipe verify --project "locpipe/projects/<project_name>"
+locpipe bootstrap-resources --project "locpipe/projects/<project_name>"
 ```
 
 ---

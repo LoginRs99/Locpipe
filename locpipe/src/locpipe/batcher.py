@@ -15,6 +15,7 @@ boundary field get the old flat-chunk behavior unchanged.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any, Optional
 
 from .config import ProjectConfig
 from .models import Entry
@@ -27,8 +28,23 @@ class TranslationBatch:
     representatives: list[Entry]   # one entry per unique tm_key in this batch
 
 
-def _entry_output_tokens(e: Entry) -> int:
-    return max(20, int(len(e.source) / 3.0)) + 15
+def _entry_output_tokens(
+    e: Entry,
+    config: Optional[ProjectConfig] = None,
+    expansion_ratio: Optional[float] = None,
+) -> int:
+    base = max(20, int(len(e.source) / 3.0)) + 15
+    ratio = expansion_ratio
+    if ratio is None and config is not None and getattr(config, "categories", None):
+        for c in config.categories:
+            if c.name == e.category and getattr(c, "max_expansion_ratio", None) is not None:
+                ratio = c.max_expansion_ratio
+                break
+    if ratio is None and getattr(e, "extra", None) and e.extra.get("max_expansion_ratio") is not None:
+        ratio = e.extra["max_expansion_ratio"]
+    if ratio is None:
+        ratio = 1.5
+    return int(base * ratio)
 
 
 def _entry_input_chars(e: Entry) -> int:
@@ -36,7 +52,11 @@ def _entry_input_chars(e: Entry) -> int:
 
 
 def _split_oversized_group(
-    group: list[Entry], max_entries: int, max_output_tokens: int, max_input_chars: int
+    group: list[Entry],
+    max_entries: int,
+    max_output_tokens: int,
+    max_input_chars: Optional[int] = None,
+    expansion_ratio: float = 1.5,
 ) -> list[list[Entry]]:
     subgroups: list[list[Entry]] = []
     current: list[Entry] = []
@@ -44,12 +64,12 @@ def _split_oversized_group(
     curr_chars = 0
 
     for e in group:
-        e_tokens = _entry_output_tokens(e)
+        e_tokens = _entry_output_tokens(e, expansion_ratio=expansion_ratio)
         e_chars = _entry_input_chars(e)
         if current and (
             len(current) + 1 > max_entries
             or curr_tokens + e_tokens > max_output_tokens
-            or curr_chars + e_chars > max_input_chars
+            or (max_input_chars is not None and curr_chars + e_chars > max_input_chars)
         ):
             subgroups.append(current)
             current = []
@@ -68,11 +88,12 @@ def _split_oversized_group(
 def _pack_groups_dynamically(
     ordered_groups: list[list[Entry]],
     max_entries: int,
-    max_output_tokens: int = 4500,
-    max_input_chars: int = 24000,
+    max_output_tokens: int = 8000,
+    max_input_chars: Optional[int] = None,
+    expansion_ratio: float = 1.5,
 ) -> list[list[Entry]]:
     """Dynamic bin-packing considering entry count, estimated output tokens,
-    and input character counts (Windows CLI argument limit safety).
+    and provider input character limits when applicable.
     """
     batches: list[list[Entry]] = []
     current: list[Entry] = []
@@ -80,23 +101,27 @@ def _pack_groups_dynamically(
     curr_chars = 0
 
     for group in ordered_groups:
-        g_tokens = sum(_entry_output_tokens(e) for e in group)
+        g_tokens = sum(_entry_output_tokens(e, expansion_ratio=expansion_ratio) for e in group)
         g_chars = sum(_entry_input_chars(e) for e in group)
 
-        if len(group) > max_entries or g_tokens > max_output_tokens or g_chars > max_input_chars:
+        if (
+            len(group) > max_entries
+            or g_tokens > max_output_tokens
+            or (max_input_chars is not None and g_chars > max_input_chars)
+        ):
             if current:
                 batches.append(current)
                 current = []
                 curr_tokens = 0
                 curr_chars = 0
-            subgroups = _split_oversized_group(group, max_entries, max_output_tokens, max_input_chars)
+            subgroups = _split_oversized_group(group, max_entries, max_output_tokens, max_input_chars, expansion_ratio=expansion_ratio)
             batches.extend(subgroups)
             continue
 
         if current and (
             len(current) + len(group) > max_entries
             or curr_tokens + g_tokens > max_output_tokens
-            or curr_chars + g_chars > max_input_chars
+            or (max_input_chars is not None and curr_chars + g_chars > max_input_chars)
         ):
             batches.append(current)
             current = []
@@ -113,7 +138,9 @@ def _pack_groups_dynamically(
 
 
 def build_batches(
-    unique_groups: dict[str, list[Entry]], config: ProjectConfig
+    unique_groups: dict[str, list[Entry]],
+    config: ProjectConfig,
+    provider: Optional[Any] = None,
 ) -> list[TranslationBatch]:
     by_category: dict[str, list[Entry]] = {}
     for group in unique_groups.values():
@@ -121,11 +148,27 @@ def build_batches(
         by_category.setdefault(rep.category or "default", []).append(rep)
 
     batches: list[TranslationBatch] = []
-    max_output_tokens_cap = min(4500, config.provider.max_output_tokens - 1000)
+    max_output_tokens_cap = config.provider.batch_output_token_cap or min(8000, config.provider.max_output_tokens - 1000)
+    provider_max_input_chars = provider.max_input_chars if provider is not None else 24000
 
     for category_name, reps in by_category.items():
         rule = next((c for c in config.categories if c.name == category_name), None)
         max_entries = rule.batch_size if rule else 2000
+        category_ratio = (
+            rule.max_expansion_ratio
+            if (rule and getattr(rule, "max_expansion_ratio", None) is not None)
+            else getattr(config, "max_expansion_ratio", 1.5)
+        ) or 1.5
+
+        if provider_max_input_chars is not None:
+            try:
+                from .schemas import build_system_prompt_for_category
+                prompt_len = len(build_system_prompt_for_category(config, category_name, []))
+            except Exception:
+                prompt_len = 0
+            effective_input_chars: Optional[int] = max(1000, provider_max_input_chars - prompt_len)
+        else:
+            effective_input_chars = None
 
         if rule and rule.narrative_boundary_field:
             boundary_groups: dict[str, list[Entry]] = {}
@@ -140,7 +183,8 @@ def build_batches(
             ordered_group_list,
             max_entries=max_entries,
             max_output_tokens=max_output_tokens_cap,
-            max_input_chars=24000,
+            max_input_chars=effective_input_chars,
+            expansion_ratio=category_ratio,
         )
 
         for chunk in chunks:

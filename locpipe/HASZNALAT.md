@@ -167,6 +167,7 @@ Importáld vissza az elkészült JSON / CSV / PO fájlokat a célalkalmazásba. 
 ```yaml
 project: Sunderfolk PC
 project_type: game          # game | software
+profile: fast               # fast (70% sebesség / 30% minőség — ajánlott) | balanced | thorough
 source_lang: en             # en | ja | hu | stb.
 target_lang: hu             # hu | en | ja | stb.
 target_register: informal   # informal | formal
@@ -184,10 +185,9 @@ resources:
 categories:
   - name: dialogue
     match_speaker_present: true
-    needs_character_voice: true
+    needs_character_voice: false # false, ha a dump kulcsai nem tartalmaznak konkrét karakterneveket
     batch_size: 200
     max_expansion_ratio: 1.8
-    effort: high
   - name: ui
     default: true
     needs_character_voice: false
@@ -199,7 +199,7 @@ provider:
   model: gemini-3.8-flash   # fordítási modell
   effort: low               # low | high
   review_model: gemini-3.8-flash
-  review_effort: high       # magasabb effort a minőségi QA javításhoz
+  review_effort: low        # low (fast) | high (thorough)
   max_concurrency: 2
 
 format_options:
@@ -219,7 +219,7 @@ tm:
   db_path: tm/translation_memory.sqlite3
 
 confidence:
-  review_threshold: 0.75
+  review_threshold: 0.65    # fast: 0.65 | balanced: 0.70 | thorough: 0.75
   tier1_repair_attempts: 2
 ```
 

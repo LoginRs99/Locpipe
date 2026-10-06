@@ -145,12 +145,9 @@ class ProviderConfig:
     # set here) -- named and split apart so setting one can't be mistaken
     # for controlling the other.
     timeout_s: int = 24 * 60 * 60
-    # sync_call_timeout_s: how long a SINGLE sync-mode translate/review/
-    # repair call is allowed to run before it's treated as failed (and,
-    # for antigravity_cli, retried -- see providers/antigravity_cli_provider.py).
-    # 300s is generous for a normal batch; raise it if you intentionally run
-    # very large batch_size values with a slow model.
     sync_call_timeout_s: int = 300
+    batch_output_token_cap: Optional[int] = None
+    context_window_tokens: Optional[int] = None
 
 
 @dataclass
@@ -166,6 +163,34 @@ class PreflightConfig:
     font_check_asset_path: Optional[str] = None
 
 
+PROFILES: dict[str, dict[str, Any]] = {
+    "fast": {
+        "review_threshold": 0.65,
+        "review_chunk_size": 50,
+        "fidelity_sample_rate": 0.0,
+        "escalation_sample_rate": 0.0,
+        "escalation_enabled": False,
+        "review_effort": "low",
+    },
+    "balanced": {
+        "review_threshold": 0.70,
+        "review_chunk_size": 30,
+        "fidelity_sample_rate": 0.01,
+        "escalation_sample_rate": 0.005,
+        "escalation_enabled": False,
+        "review_effort": "low",
+    },
+    "thorough": {
+        "review_threshold": 0.75,
+        "review_chunk_size": 30,
+        "fidelity_sample_rate": 0.03,
+        "escalation_sample_rate": 0.01,
+        "escalation_enabled": True,
+        "review_effort": "high",
+    },
+}
+
+
 @dataclass
 class ProjectConfig:
     project: str
@@ -179,6 +204,7 @@ class ProjectConfig:
     provider: ProviderConfig
     tm_db_path: Path
     project_type: str = "game"
+    profile: str = "thorough"
     target_register: str = "informal"
     review_threshold: float = 0.75
     max_expansion_ratio: float = 1.6
@@ -213,6 +239,7 @@ class ProjectConfig:
     # it if memory is tight or you want to see files land sooner.
     translate_file_window: int = 8
     preflight: "PreflightConfig" = field(default_factory=lambda: PreflightConfig())
+    gate_naturalness: bool = False
 
     @property
     def batch_files(self) -> list[Path]:
@@ -283,6 +310,10 @@ def load_project(project_dir: str | Path) -> ProjectConfig:
     if not any(c.is_default for c in categories):
         categories[-1].is_default = True
 
+    raw_profile = str(raw.get("profile") or raw.get("speed_profile") or "thorough").lower().strip()
+    profile_name = raw_profile if raw_profile in PROFILES else "thorough"
+    prof = PROFILES[profile_name]
+
     provider_raw = raw.get("provider") or {}
     escalation_raw = raw.get("escalation") or raw.get("qa") or {}
     provider = ProviderConfig(
@@ -294,13 +325,15 @@ def load_project(project_dir: str | Path) -> ProjectConfig:
         max_output_tokens=provider_raw.get("max_output_tokens", 16384),
         review_model=provider_raw.get("review_model"),
         effort=provider_raw.get("effort", "low"),
-        review_effort=provider_raw.get("review_effort", "high"),
+        review_effort=provider_raw.get("review_effort", prof["review_effort"]),
         escalation_model=provider_raw.get("escalation_model", escalation_raw.get("model")),
         escalation_effort=provider_raw.get("escalation_effort", escalation_raw.get("effort", "high")),
-        escalation_enabled=provider_raw.get("escalation_enabled", escalation_raw.get("enabled", True)),
+        escalation_enabled=provider_raw.get("escalation_enabled", escalation_raw.get("enabled", prof["escalation_enabled"])),
         poll_interval_s=provider_raw.get("poll_interval_s", 30),
         timeout_s=provider_raw.get("timeout_s", 24 * 60 * 60),
         sync_call_timeout_s=provider_raw.get("sync_call_timeout_s", 300),
+        batch_output_token_cap=provider_raw.get("batch_output_token_cap"),
+        context_window_tokens=provider_raw.get("context_window_tokens"),
     )
     if provider.name != "antigravity_cli":
         raise ValueError(
@@ -335,6 +368,7 @@ def load_project(project_dir: str | Path) -> ProjectConfig:
         source_lang=raw["source_lang"],
         target_lang=raw["target_lang"],
         project_type=project_type,
+        profile=profile_name,
         target_register=target_register,
         format=raw["format"],
         root=root,
@@ -343,16 +377,17 @@ def load_project(project_dir: str | Path) -> ProjectConfig:
         categories=categories,
         provider=provider,
         tm_db_path=tm_db_path,
-        review_threshold=confidence_raw.get("review_threshold", 0.75),
-        max_expansion_ratio=confidence_raw.get("max_expansion_ratio", 1.6),
-        tier1_repair_attempts=confidence_raw.get("tier1_repair_attempts", 1),
+        review_threshold=float(confidence_raw.get("review_threshold", prof["review_threshold"])),
+        max_expansion_ratio=float(confidence_raw.get("max_expansion_ratio", 1.6)),
+        tier1_repair_attempts=int(confidence_raw.get("tier1_repair_attempts", 1)),
         format_options=raw.get("format_options") or {},
-        escalation_confidence_threshold=confidence_raw.get("escalation_confidence_threshold", 0.30),
-        escalation_sample_rate=confidence_raw.get("escalation_sample_rate", escalation_raw.get("sample_rate", 0.01)),
-        fidelity_sample_rate=confidence_raw.get("fidelity_sample_rate", 0.03),
-        max_placeholders_for_low=confidence_raw.get("max_placeholders_for_low", 3),
-        max_source_len_for_low=confidence_raw.get("max_source_len_for_low", 250),
-        review_chunk_size=confidence_raw.get("review_chunk_size", 30),
+        escalation_confidence_threshold=float(confidence_raw.get("escalation_confidence_threshold", 0.30)),
+        escalation_sample_rate=float(confidence_raw.get("escalation_sample_rate", escalation_raw.get("sample_rate", prof["escalation_sample_rate"]))),
+        fidelity_sample_rate=float(confidence_raw.get("fidelity_sample_rate", prof["fidelity_sample_rate"])),
+        max_placeholders_for_low=int(confidence_raw.get("max_placeholders_for_low", 3)),
+        max_source_len_for_low=int(confidence_raw.get("max_source_len_for_low", 250)),
+        review_chunk_size=int(confidence_raw.get("review_chunk_size", prof["review_chunk_size"])),
         translate_file_window=raw.get("translate_file_window", 8),
         preflight=preflight,
+        gate_naturalness=raw.get("gate_naturalness", False),
     )

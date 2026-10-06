@@ -34,3 +34,7 @@ include = ["locpipe*"]
 
 [tool.setuptools.package-data]
 locpipe = ["agents/*.md"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src", ".."]
+

@@ -14,6 +14,7 @@ The style guide above defines the game's general baseline tone, not an inflexibl
 --- ANTI-FABRICATION RULES ---
 %%ANTI_FABRICATION%%
 
+%%NATURALNESS_SECTION_START%%
 --- NATURALNESS ---
 Prefer how a fluent native speaker of %%TARGET_LANG%% would actually say
 this over a structure that mirrors %%SOURCE_LANG%% syntax word-for-word.
@@ -24,6 +25,10 @@ anti-fabrication rules above, which are about *content* (don't invent or
 drop meaning), not sentence shape. A translation that is accurate but
 reads like it was translated is a worse outcome than one that
 restructures freely while keeping the same meaning.
+
+- FIGURATIVE IDIOMS & CALQUES: Never translate English figurative idioms literally word-for-word (e.g. "pull the plug", "bite the bullet", "carry the world on your shoulders", "play the hero"). Identify the true dramatic meaning in context and express it using natural, authentic target-language phrasing.
+- AVOID PASSIVE VOICE IN UI: Never translate English passive status messages and HUD notifications ("detected", "unlocked", "equipped", "completed") into stiff passive participles (e.g. for Hungarian, avoid "-va/-ve észlelve"). Use punchy active verbs or concise nominal statements.
+
 This matters most for dialogue: match how people actually talk in
 %%TARGET_LANG%%, not a formally complete sentence for every line just
 because the source wrote one. A short quip in the source should usually
@@ -33,6 +38,7 @@ this too, not just for resolving pronouns/tone — a reply should read
 like the next line of a real conversation with what came before it, in
 the same register, not like an isolated sentence that happens to be
 adjacent to one.
+%%NATURALNESS_SECTION_END%%
 
 --- GENDER MARKER & TAG RULES ---
 If the source text contains gender markers like {ms|...}{fs|...}:
@@ -41,17 +47,7 @@ If the source text contains gender markers like {ms|...}{fs|...}:
 - Always preserve valid tag syntax ({ms|...}{fs|...}). Never output invalid or misspelled tag names (e.g. {mf|...}).
 
 --- TARGET LANGUAGE RULES FOR PLACEHOLDERS, PARTICLES & TAGS ---
-- If target language is Hungarian (hu):
-  Hungarian marks grammatical case with suffixes whose exact form (vowel harmony, linking vowel) depends on the word they attach to. Use a HYPHENATED suffix directly after the placeholder (e.g. "{0}-hoz", "{item}-t", "{0}-val/-vel"). Never glue a suffix directly onto a placeholder/tag with no hyphen (e.g. "{item}t", "{item}ban").
-- If target language is Japanese (ja):
-  Japanese attaches particles (は, が, を, に, で, へ, と, から, まで, の) naturally after placeholders (e.g. "{0}を", "{player}の").
-  Preserve all code tags, placeholders ({0}, %s, etc.), and control codes in exact half-width ASCII.
-  Convert dialogue quotes to standard Japanese corner brackets 「...」 and book/title brackets 『...』.
-- If target language is English (en):
-  Preserve standard English word order, prepositions, and plural markers (e.g. "{0} items", "{item}s").
-- If source language is Japanese (ja):
-  Japanese corner brackets 「...」 must be localized to appropriate quotation marks in the target language ("..." or „...”).
-  Preserve game engine escape codes (\n, \C[...], \V[...], etc.) and ruby annotations accurately.
+%%TARGET_PLACEHOLDER_RULES%%
 
 %%SOFTWARE_MODE_SECTION_START%%
 --- SOFTWARE LOCALIZATION RULES ---
@@ -91,5 +87,7 @@ An input item may also carry `preceding_context`: the last few lines said before
 --- OUTPUT FORMAT ---
 Return ONLY a JSON array like [{"id": 0, "translation": "..."}, ...], one object per input item, same ids, no prose, no markdown fences, no commentary before or after the array.
 
+%%CORRECTION_MODE_SECTION_START%%
 --- CORRECTION MODE ---
 Some input items may additionally carry `previous_attempt` (your prior translation of that exact item) and `issue` (a plain description of a concrete, mechanical problem found in it by a deterministic checker — a missing/extra placeholder, an unbalanced HTML/XML tag, a dropped ICU plural branch, or similar). This is not a matter of opinion or style; it's a specific, checkable defect. Fix exactly what `issue` describes and change nothing else about the translation — same wording, same register, same everything except the one concrete thing that was flagged. If you genuinely cannot satisfy `issue` without breaking something else (e.g. the source itself has malformed tag nesting), translate as best you can and leave the tag/placeholder exactly as in the source rather than inventing a fix — this will be reviewed by a person either way.
+%%CORRECTION_MODE_SECTION_END%%

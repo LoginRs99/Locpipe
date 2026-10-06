@@ -23,6 +23,7 @@ Ismert egyszerűsítés: a táblázat-sor-parser nem kezeli az escape-elt
 sem fordul elő, de ha a jövőben szükség lenne rá, itt kell bővíteni).
 """
 import json
+import os
 import re
 
 VALID_CATEGORIES = {"brand", "lore", "mechanic", "ui", "person"}
@@ -230,17 +231,25 @@ def extract_glossary_arg(argv):
     return argv, None
 
 
+_GLOSSARY_CHECK_CACHE: dict[tuple[str, float], list] = {}
+
+
 def load_glossary_for_check(path):
     """Kényelmi függvény: beolvassa a glossary.md-t vagy glossary.json-t és visszaadja az
-    entries listát a check_protected_terms()-hez. Ha a fájl hiányzik
-    vagy üres, üres listát ad vissza -- ez NEM hiba (lehet, hogy a
-    glossary-researcher még nem futott le), csak nincs mit ellenőrizni."""
+    entries listát a check_protected_terms()-hez. Gyorsítótárazva (str(path), mtime) alapján."""
     if not path:
         return []
     try:
-        entries, issues = parse_glossary(path)
-        if str(path).lower().endswith(".json") and issues and not entries:
-            raise ValueError(f"Failed to load JSON glossary '{path}': {issues[0][1]}")
+        norm_path = str(path)
+        mtime = os.path.getmtime(norm_path)
+        cache_key = (norm_path, mtime)
+        if cache_key in _GLOSSARY_CHECK_CACHE:
+            return _GLOSSARY_CHECK_CACHE[cache_key]
+
+        entries, issues = parse_glossary(norm_path)
+        if norm_path.lower().endswith(".json") and issues and not entries:
+            raise ValueError(f"Failed to load JSON glossary '{norm_path}': {issues[0][1]}")
+        _GLOSSARY_CHECK_CACHE[cache_key] = entries
         return entries
     except OSError:
         return []

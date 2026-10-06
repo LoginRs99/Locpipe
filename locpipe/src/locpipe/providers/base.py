@@ -29,6 +29,15 @@ class TranslationProvider(ABC):
     #: corrupting future real output is the opposite of that.
     persists_to_tm: bool = True
 
+    #: Transport input length cap in characters. Defaults to 24000 for standard
+    #: transport backends. If None, transport imposes no cap (e.g. prompt travels via temp file).
+    max_input_chars: int | None = 24000
+
+    #: Declared model context window in tokens, or None if undeclared/unknown.
+    #: When set, used solely to drive advisory warnings in plan(); never treated as a number
+    #: to drive batch sizing.
+    context_window_tokens: int | None = None
+
     @abstractmethod
     async def complete(
         self,

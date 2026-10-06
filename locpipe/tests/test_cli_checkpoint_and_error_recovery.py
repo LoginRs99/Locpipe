@@ -26,7 +26,8 @@ class ErrorSimulationProvider(TranslationProvider):
 
     async def complete(self, system_prompt: str, user_payload: str, *, max_tokens: int = 8192) -> str:
         self.call_count += 1
-        parsed = json.loads(user_payload)
+        payload_json = user_payload.split("\n\n(Your previous response was invalid:")[0]
+        parsed = json.loads(payload_json)
 
         if self.mode == "invalid_json":
             if self.call_count == 1:

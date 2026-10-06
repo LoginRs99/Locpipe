@@ -60,6 +60,58 @@ try:
             click.secho(f"[WARNING] {res.get('message')}", fg="yellow")
             sys.exit(0)
 
+    def _proxy_to_locpipe(subcmd: str, extra_args: list[str]):
+        from locpipe.cli import main as locpipe_main
+        sys.exit(locpipe_main([subcmd] + list(extra_args)))
+
+    @main.command(name="gui")
+    def gui_cmd():
+        """Launch the GameStringer Desktop GUI."""
+        from gamestringer.desktop_gui.app import main as main_desktop_gui
+        main_desktop_gui()
+
+    @main.command(name="plan", context_settings=dict(ignore_unknown_options=True, allow_extra_args=True))
+    @click.pass_context
+    def plan_cmd(ctx):
+        """Pre-flight token & batch estimation (via locpipe)."""
+        _proxy_to_locpipe("plan", ctx.args)
+
+    @main.command(name="run", context_settings=dict(ignore_unknown_options=True, allow_extra_args=True))
+    @click.pass_context
+    def run_cmd(ctx):
+        """Execute translation pipeline (via locpipe)."""
+        _proxy_to_locpipe("run", ctx.args)
+
+    @main.command(name="audit", context_settings=dict(ignore_unknown_options=True, allow_extra_args=True))
+    @click.pass_context
+    def audit_cmd(ctx):
+        """Audit extraction noise & excluded paths (via locpipe)."""
+        _proxy_to_locpipe("audit", ctx.args)
+
+    @main.command(name="verify", context_settings=dict(ignore_unknown_options=True, allow_extra_args=True))
+    @click.pass_context
+    def verify_cmd(ctx):
+        """Verify post-run merge integrity (via locpipe)."""
+        _proxy_to_locpipe("verify", ctx.args)
+
+    @main.command(name="init", context_settings=dict(ignore_unknown_options=True, allow_extra_args=True))
+    @click.pass_context
+    def init_cmd(ctx):
+        """Scaffold a new localization project (via locpipe)."""
+        _proxy_to_locpipe("init", ctx.args)
+
+    @main.command(name="tm-invalidate", context_settings=dict(ignore_unknown_options=True, allow_extra_args=True))
+    @click.pass_context
+    def tm_invalidate_cmd(ctx):
+        """Invalidate TM entries to force re-translation (via locpipe)."""
+        _proxy_to_locpipe("tm-invalidate", ctx.args)
+
+    @main.command(name="bootstrap-resources", context_settings=dict(ignore_unknown_options=True, allow_extra_args=True))
+    @click.pass_context
+    def bootstrap_resources_cmd(ctx):
+        """AI-bootstrap glossary & style guide from TM (via locpipe)."""
+        _proxy_to_locpipe("bootstrap-resources", ctx.args)
+
 except ImportError:
     import argparse
 
@@ -79,7 +131,14 @@ except ImportError:
         fc_p = subparsers.add_parser("fix-catalog")
         fc_p.add_argument("--input", "-i", required=True)
 
-        args = parser.parse_args()
+        # gui
+        subparsers.add_parser("gui")
+
+        # locpipe bridged commands
+        for cmd_name in ("plan", "run", "audit", "verify", "init", "tm-invalidate", "bootstrap-resources"):
+            subparsers.add_parser(cmd_name)
+
+        args, rest = parser.parse_known_args()
 
         if args.command == "check-fonts":
             rep = check_game_fonts(args.input, args.engine)
@@ -89,6 +148,12 @@ except ImportError:
             rep = fix_catalog_crc_command(args.input)
             print(f"Fix catalog result: {rep.get('message')}")
             sys.exit(0)
+        elif args.command == "gui":
+            from gamestringer.desktop_gui.app import main as main_desktop_gui
+            main_desktop_gui()
+        elif args.command in ("plan", "run", "audit", "verify", "init", "tm-invalidate", "bootstrap-resources"):
+            from locpipe.cli import main as locpipe_main
+            sys.exit(locpipe_main([args.command] + rest))
         else:
             parser.print_help()
 

@@ -14,6 +14,7 @@ from .preflight.run_safety import snapshot_tm, sweep_orphaned_agy_artifacts
 _INIT_GAME_TEMPLATE = """\
 project: {name}
 project_type: game
+profile: fast   # fast (70% speed / 30% quality - recommended) | balanced | thorough
 source_lang: {source_lang}
 target_lang: {target_lang}
 target_register: informal   # informal (tegez — default) | formal (magáz)
@@ -50,7 +51,7 @@ provider:
   model: gemini-3.8-flash # bulk-translate model
   effort: low             # low | high -- antigravity_cli only
   review_model: gemini-3.8-flash
-  review_effort: high
+  review_effort: low
   mode: sync        # or "batch" for large non-urgent runs
   max_concurrency: 2
 
@@ -58,7 +59,7 @@ tm:
   db_path: tm/translation_memory.sqlite3
 
 confidence:
-  review_threshold: 0.75
+  review_threshold: 0.65
   max_expansion_ratio: 1.6
   tier1_repair_attempts: 2
 """
@@ -66,6 +67,7 @@ confidence:
 _INIT_SOFTWARE_TEMPLATE = """\
 project: {name}
 project_type: software
+profile: fast   # fast (70% speed / 30% quality - recommended) | balanced | thorough
 source_lang: {source_lang}
 target_lang: {target_lang}
 target_register: informal   # informal (közvetlen — default) | formal (hivatalos)
@@ -101,7 +103,7 @@ provider:
   model: gemini-3.8-flash
   effort: low
   review_model: gemini-3.8-flash
-  review_effort: high
+  review_effort: low
   mode: sync
   max_concurrency: 2
 
@@ -109,7 +111,7 @@ tm:
   db_path: tm/translation_memory.sqlite3
 
 confidence:
-  review_threshold: 0.75
+  review_threshold: 0.65
   max_expansion_ratio: 1.6
   tier1_repair_attempts: 2
 """
@@ -216,7 +218,14 @@ def cmd_plan(args: argparse.Namespace) -> int:
         if font_result.get("character_replacements_applied"):
             print(f"  Auto-applied character fallback: {font_result['character_replacements_applied']}")
     limit = args.limit or args.sample
-    result = plan(config, limit_batches=limit)
+    try:
+        provider = _build_provider(config, dry_run=getattr(args, "dry_run", False))
+    except Exception as e:
+        provider = None
+        print(f"Note: Could not instantiate provider for capability lookup ({e}); using base defaults.")
+    result = plan(config, provider=provider, limit_batches=limit, include_totals=True)
+    if result.get("context_window_warning"):
+        print(f"  [ADVISORY] {result['context_window_warning']}")
 
     print("=== PRE-FLIGHT PLAN & TOKEN ESTIMATE ===")
     print(f"  Project:                      {config.project}")
@@ -303,6 +312,12 @@ def cmd_audit(args: argparse.Namespace) -> int:
                 for rx in sugg.suggested_path_excludes:
                     print(f"    • {rx}")
 
+            if not sugg.has_detected_speakers:
+                print("\n  Speaker Detection:   No character tags detected in keys -> recommended needs_character_voice: false")
+            else:
+                print("\n  Speaker Detection:   Character identifiers detected in keys/dump -> needs_character_voice: true")
+            print(f"  Recommended Profile: {sugg.recommended_profile} (70% speed / 30% quality)")
+
             if getattr(args, "apply", False):
                 # Apply suggested preset to lang-style.md
                 ls_path = config.resources.get("lang_style") or (config.root / "resources" / "lang-style.md")
@@ -339,12 +354,31 @@ def cmd_audit(args: argparse.Namespace) -> int:
                     cv_path.write_text("\n".join(cv_lines) + "\n", encoding="utf-8")
                     print(f"  [APPLIED] Written {len(sugg.character_voices)} characters to {cv_path}")
 
-                # Apply suggested path excludes if present
-                if sugg.suggested_path_excludes:
-                    import yaml
-                    cfg_file = config.root / "project.yaml"
-                    if cfg_file.exists():
-                        cfg_data = yaml.safe_load(cfg_file.read_text(encoding="utf-8")) or {}
+                # Apply configuration changes to project.yaml
+                import yaml
+                cfg_file = config.root / "project.yaml"
+                if cfg_file.exists():
+                    cfg_data = yaml.safe_load(cfg_file.read_text(encoding="utf-8")) or {}
+                    yaml_changed = False
+
+                    # Auto-tune dialogue category based on whether speaker identifiers exist
+                    if not sugg.has_detected_speakers:
+                        cats = cfg_data.get("categories", [])
+                        for cat in cats:
+                            if isinstance(cat, dict) and cat.get("name") == "dialogue":
+                                if cat.get("needs_character_voice", False):
+                                    cat["needs_character_voice"] = False
+                                    yaml_changed = True
+                                    print("  [APPLIED] Set dialogue needs_character_voice: false (prevents review stalls)")
+
+                    # Ensure profile is configured
+                    if "profile" not in cfg_data:
+                        cfg_data["profile"] = sugg.recommended_profile
+                        yaml_changed = True
+                        print(f"  [APPLIED] Set profile: {sugg.recommended_profile}")
+
+                    # Apply suggested path excludes if present
+                    if sugg.suggested_path_excludes:
                         f_opts = cfg_data.setdefault("format_options", {})
                         p_ex = f_opts.setdefault("uabea_json_path_exclude", [])
                         if not isinstance(p_ex, list):
@@ -356,8 +390,12 @@ def cmd_audit(args: argparse.Namespace) -> int:
                                 p_ex.append(rx)
                                 added += 1
                         if added > 0:
-                            cfg_file.write_text(yaml.dump(cfg_data, sort_keys=False, allow_unicode=True), encoding="utf-8")
-                            print(f"  [APPLIED] Added {added} path exclude regex(es) to {cfg_file}")
+                            yaml_changed = True
+                            print(f"  [APPLIED] Added {added} path exclude regex(es)")
+
+                    if yaml_changed:
+                        cfg_file.write_text(yaml.dump(cfg_data, sort_keys=False, allow_unicode=True), encoding="utf-8")
+                        print(f"  [APPLIED] Updated {cfg_file}")
             else:
                 print("\nTip: Run with `locpipe audit --suggest --apply` to automatically write these resources.")
             print("==========================================")
@@ -398,6 +436,8 @@ def cmd_run(args: argparse.Namespace) -> int:
         snapshot_path = snapshot_tm(config)
         print(f"  TM Snapshot:    {snapshot_path}")
 
+    provider = _build_provider(config, args.dry_run, pseudo_loc=pseudo_loc)
+
     # Hook 4: mandatory max_api_calls -- auto-calculated from plan() if the
     # user didn't pass --max-api-calls explicitly. NOTE: this budget only
     # counts bulk-translate calls (see _translate_batches_sync's counter) --
@@ -406,7 +446,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     # limitation, not fixed here.
     effective_max_api_calls = args.max_api_calls
     if effective_max_api_calls is None and is_real_run:
-        plan_result = plan(config, limit_batches=limit)
+        plan_result = plan(config, provider=provider, limit_batches=limit, include_totals=False)
         effective_max_api_calls = max(1, int(plan_result["llm_calls_needed"] * 1.1) + 3)
         print(
             f"  Safety Budget:  auto-calculated max_api_calls = {effective_max_api_calls} "
@@ -428,8 +468,6 @@ def cmd_run(args: argparse.Namespace) -> int:
         print(f"  File Limit:     Only processing first {limit} file(s)")
     print("=====================================")
     print()
-
-    provider = _build_provider(config, args.dry_run, pseudo_loc=pseudo_loc)
 
     review_model = config.provider.review_model or config.provider.model
     review_effort = config.provider.review_effort or "high"
@@ -581,6 +619,72 @@ def cmd_verify(args: argparse.Namespace) -> int:
 
     print("  Status: All noise and excluded paths remained perfectly untouched.")
     print("=======================================")
+    return 0
+
+
+def cmd_auto(args: argparse.Namespace) -> int:
+    """Zero-touch autonomous execution:
+    1. Preflight audit & validation
+    2. Staged canary test run (limit=1 file, bounded API calls)
+    3. Full project execution with auto-budgeting
+    4. Post-run integrity verification & summary output
+    """
+    proj_path = Path(args.project)
+    print("==================================================================")
+    print(f"🚀 LOCPIPE ZERO-TOUCH AUTOMATION: {proj_path.name}")
+    print("==================================================================")
+
+    # Stage 1: Load config & verify files
+    config = load_project(proj_path)
+    print(f"[Stage 1/4] Project loaded: {config.project} ({config.source_lang} -> {config.target_lang}, {config.format})")
+    if not config.batch_files:
+        print("❌ Error: No batch files found matching batch glob pattern. Aborting.")
+        return 1
+    print(f"            Found {len(config.batch_files)} batch file(s).")
+
+    # Stage 2: Canary Batch Test
+    if not getattr(args, "skip_canary", False) and len(config.batch_files) > 0:
+        canary_calls = getattr(args, "canary_calls", 5)
+        print(f"\n[Stage 2/4] Running Staged Canary Test (limit=1 file, max_api_calls={canary_calls})...")
+        canary_args = argparse.Namespace(
+            project=str(proj_path),
+            dry_run=args.dry_run,
+            pseudo_loc=getattr(args, "pseudo_loc", False),
+            limit=1,
+            sample=None,
+            max_api_calls=canary_calls,
+        )
+        canary_ret = cmd_run(canary_args)
+        if canary_ret != 0:
+            print("❌ Canary test stage failed! Halting before full run.")
+            return canary_ret
+        print("✅ Canary stage verified successfully. Checkpoints and TM updated.")
+
+    # Stage 3: Full Project Run
+    print("\n[Stage 3/4] Running Full Unattended Project Translation...")
+    full_args = argparse.Namespace(
+        project=str(proj_path),
+        dry_run=args.dry_run,
+        pseudo_loc=getattr(args, "pseudo_loc", False),
+        limit=None,
+        sample=None,
+        max_api_calls=None,
+    )
+    full_ret = cmd_run(full_args)
+    if full_ret != 0:
+        print("❌ Full run terminated with errors.")
+        return full_ret
+    print("✅ Full project translation complete.")
+
+    # Stage 4: Post-Run Verification
+    print("\n[Stage 4/4] Executing Post-Run Integrity Verification...")
+    verify_args = argparse.Namespace(project=str(proj_path))
+    cmd_verify(verify_args)
+
+    print("\n==================================================================")
+    print(f"🎉 ZERO-TOUCH LOCALIZATION COMPLETED FOR: {config.project}")
+    print("   Reports generated under review/ and translation memory persisted.")
+    print("==================================================================")
     return 0
 
 
@@ -810,6 +914,17 @@ def main(argv: list[str] | None = None) -> int:
     p_run.add_argument("--sample", type=int, default=None, help="alias for --limit")
     p_run.add_argument("--max-api-calls", type=int, default=None, help="hard ceiling on total LLM API completion requests")
     p_run.set_defaults(func=cmd_run)
+
+    p_auto = sub.add_parser(
+        "auto",
+        help="zero-touch autonomous localization: preflight audit, canary batch test, full execution, and post-run verification",
+    )
+    p_auto.add_argument("--project", required=True, help="path to the project directory")
+    p_auto.add_argument("--dry-run", action="store_true", help="use mock provider, no API calls")
+    p_auto.add_argument("--pseudo-loc", action="store_true", help="run deterministic pseudo-localization")
+    p_auto.add_argument("--canary-calls", type=int, default=5, help="max API calls for canary stage (default: 5)")
+    p_auto.add_argument("--skip-canary", action="store_true", help="skip staged canary and proceed directly to full run")
+    p_auto.set_defaults(func=cmd_auto)
 
     p_inv = sub.add_parser("tm-invalidate", help="invalidate a TM entry to force retranslation on next run")
     p_inv.add_argument("--project", required=True, help="path to the project directory")

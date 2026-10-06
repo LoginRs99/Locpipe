@@ -118,20 +118,26 @@ def prune_for_batch(
 ) -> list[GlossaryTerm]:
     """Keep only glossary terms that actually appear in this batch.
 
-    This is deliberately a cheap word-overlap filter, not semantic
-    matching — false positives (an unrelated term sharing a common
-    word) just mean a slightly larger prompt, which is a much cheaper
-    mistake than a false negative dropping a term that was needed.
+    This uses prefix-anchored phrase matching rather than naive any-shared-word
+    overlap -- false positives (an unrelated term sharing a common word) are
+    avoided while keeping prefix matching without trailing boundaries so that
+    Hungarian inflected forms (e.g. Network-től, Connect-tel) are preserved.
+    Biased toward keeping: false negatives dropping a term are much worse than
+    modest over-inclusion.
     """
     if not glossary:
         return []
-    batch_words = _words(" ".join(batch_source_texts))
-    if not batch_words:
+    if not batch_source_texts:
+        return list(glossary)
+    batch_text = " ".join(batch_source_texts)
+    if not batch_text.strip():
         return list(glossary)
     kept = []
     for term in glossary:
-        term_words = _words(term.source_term)
-        if term_words & batch_words:
+        if not term.source_term:
+            continue
+        pattern = r"(?<!\w)" + re.escape(term.source_term)
+        if re.search(pattern, batch_text, re.IGNORECASE):
             kept.append(term)
     return kept
 

@@ -12,12 +12,19 @@ TM miss).
 
 from __future__ import annotations
 
+import difflib
+import re
 from dataclasses import dataclass
 
 from .context_key import build_tm_key
-from .models import Entry, EntryStatus
+from .models import Entry, EntryStatus, TMRecord
 from .normalize import content_hash, normalize_source
 from .tm import TranslationMemory
+
+
+def _simple_norm(text: str) -> str:
+    """Lowercase and whitespace-collapsed text for similarity comparison."""
+    return re.sub(r"\s+", " ", text.lower().strip())
 
 
 @dataclass
@@ -26,6 +33,7 @@ class DedupeResult:
     unique_groups: dict[str, list[Entry]]   # tm_key -> entries sharing it
     total_entries_needing_mt: int           # == sum(len) below, kept for readability
     total_unique_strings_to_translate: int  # == len(unique_groups)
+    fuzzy_tm_hits: int = 0
 
 
 def enrich_and_dedupe(
@@ -44,8 +52,11 @@ def enrich_and_dedupe(
     tm_matches = tm.get_many(tm_keys)
 
     tm_hits = 0
+    fuzzy_tm_hits = 0
     groups: dict[str, list[Entry]] = {}
     hit_keys: list[str] = []
+    unmatched: list[Entry] = []
+
     for e in to_process:
         record = tm_matches.get(e.tm_key)
         if record is not None:
@@ -55,8 +66,90 @@ def enrich_and_dedupe(
             hit_keys.append(e.tm_key)
             tm_hits += 1
         else:
-            groups.setdefault(e.tm_key, []).append(e)
-    tm.mark_used_many(hit_keys)
+            unmatched.append(e)
+
+    if unmatched:
+        import bisect
+
+        unmatched_cats = {e.category or "default" for e in unmatched}
+        tm_by_category: dict[str, list[tuple[TMRecord, str, int]]] = {}
+        for _, rec in tm.iter_all():
+            cat = rec.category or "default"
+            if cat in unmatched_cats and rec.translation and rec.translation.strip():
+                rec_norm = _simple_norm(rec.source)
+                if rec_norm:
+                    tm_by_category.setdefault(cat, []).append((rec, rec_norm, len(rec_norm)))
+
+        # Sort candidates by normalized length and precompute lengths for fast range slicing via bisect
+        cand_lens_by_category: dict[str, list[int]] = {}
+        for cat_name, cat_list in tm_by_category.items():
+            cat_list.sort(key=lambda x: x[2])
+            cand_lens_by_category[cat_name] = [c[2] for c in cat_list]
+
+        fuzzy_keys: list[str] = []
+        # Cache fuzzy match outcomes across duplicate source strings in the batch
+        fuzzy_cache: dict[tuple[str, str, str | None], tuple[int, float, TMRecord] | None] = {}
+
+        for e in unmatched:
+            cat = e.category or "default"
+            candidates = tm_by_category.get(cat, [])
+            if not candidates:
+                groups.setdefault(e.tm_key, []).append(e)
+                continue
+
+            src_norm = _simple_norm(e.source)
+            src_len = len(src_norm)
+            if not src_norm:
+                groups.setdefault(e.tm_key, []).append(e)
+                continue
+
+            cache_key = (cat, src_norm, e.context_key)
+            if cache_key in fuzzy_cache:
+                best_match = fuzzy_cache[cache_key]
+            else:
+                cand_lens = cand_lens_by_category[cat]
+                min_len = int(src_len * 0.85)
+                max_len = int(src_len * 1.15) + 1
+                left_idx = bisect.bisect_left(cand_lens, min_len)
+                right_idx = bisect.bisect_right(cand_lens, max_len)
+
+                best_match = None
+                for rec, cand_norm, cand_len in candidates[left_idx:right_idx]:
+                    matcher = difflib.SequenceMatcher(None, src_norm, cand_norm)
+                    if matcher.quick_ratio() < 0.9:
+                        continue
+
+                    ratio = matcher.ratio()
+                    if ratio >= 0.9:
+                        ctx_priority = 2 if (e.context_key and rec.context_key == e.context_key) else (
+                            1 if (not e.context_key and not rec.context_key) else 0
+                        )
+                        score_tuple = (ctx_priority, ratio)
+                        if best_match is None or score_tuple > (best_match[0], best_match[1]):
+                            best_match = (ctx_priority, ratio, rec)
+                fuzzy_cache[cache_key] = best_match
+
+            if best_match is not None:
+                _, best_ratio, best_rec = best_match
+                e.target = best_rec.translation
+                # Keep status as MT_DRAFT so it still runs through the per-file validators
+                e.status = EntryStatus.MT_DRAFT
+                e.origin = "fuzzy_tm"
+                e.extra["_fuzzy_tm_match"] = {
+                    "similarity": best_ratio,
+                    "matched_source": best_rec.source,
+                    "matched_tm_key": best_rec.tm_key,
+                }
+                fuzzy_keys.append(best_rec.tm_key)
+                fuzzy_tm_hits += 1
+            else:
+                groups.setdefault(e.tm_key, []).append(e)
+
+        if fuzzy_keys:
+            tm.mark_used_many(fuzzy_keys)
+
+    if hit_keys:
+        tm.mark_used_many(hit_keys)
 
     total_needing_mt = sum(len(v) for v in groups.values())
     return DedupeResult(
@@ -64,6 +157,7 @@ def enrich_and_dedupe(
         unique_groups=groups,
         total_entries_needing_mt=total_needing_mt,
         total_unique_strings_to_translate=len(groups),
+        fuzzy_tm_hits=fuzzy_tm_hits,
     )
 
 

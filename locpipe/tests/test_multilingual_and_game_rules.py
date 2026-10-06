@@ -103,6 +103,27 @@ def test_game_engine_protected_tokens_and_escapes():
     assert any(r"\n" in i.message for i in issues_bad)
 
 
+def test_console_bracket_tokens_with_whitespace():
+    source = "[BTN:L2 ] + [BTN:RS ] (hold): Move Legion to [HUDTEXT:MISSION_NAME ]. [COLOR:RED ]Alert![COLOR:WHITE ]"
+    tokens = extract_protected_tokens(source)
+    assert "[BTN:L2 ]" in tokens
+    assert "[BTN:RS ]" in tokens
+    assert "[HUDTEXT:MISSION_NAME ]" in tokens
+    assert "[COLOR:RED ]" in tokens
+    assert "[COLOR:WHITE ]" in tokens
+
+    # Valid translation preserving tokens exactly
+    target_valid = "[BTN:L2 ] + [BTN:RS ] (tartva): Legion mozgatása ide: [HUDTEXT:MISSION_NAME ]. [COLOR:RED ]Riadó![COLOR:WHITE ]"
+    issues = audit_entry_tokens(source, target_valid)
+    assert len(issues) == 0
+
+    # Invalid translation where [BTN:L2 ] had space stripped and [COLOR:RED ] was translated
+    target_invalid = "[BTN:L2] + [BTN:RS ] (tartva): Legion mozgatása ide: [HUDTEXT:MISSION_NAME ]. [SZÍN:PIROS ]Riadó![COLOR:WHITE ]"
+    issues_bad = audit_entry_tokens(source, target_invalid)
+    codes = {i.code for i in issues_bad}
+    assert "PROTECTED_TOKEN_MISSING" in codes or "PROTECTED_TOKEN_MODIFIED" in codes
+
+
 def test_protected_token_multiplicity_count():
     source = "Item {0} connects to {0} slot."
     # Target only preserved one {0}

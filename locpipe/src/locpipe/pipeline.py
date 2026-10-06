@@ -16,7 +16,7 @@ import zlib
 from pathlib import Path
 
 from .adapters.registry import get_adapter
-from .batcher import build_batches
+from .batcher import TranslationBatch, build_batches
 from .checkpoint import Checkpoint, fingerprint_batches
 from .classify import classify_entries
 from .config import ProjectConfig
@@ -178,10 +178,6 @@ async def _translate_batches_sync(batches, config, glossary, provider: Translati
                 e.origin = "mt"
             return batch
 
-        if max_api_calls is not None and api_call_count[0] >= max_api_calls:
-            raise RuntimeError(f"Reached --max-api-calls budget limit ({max_api_calls}). Stopping cleanly.")
-        api_call_count[0] += 1
-
         if getattr(provider, "prefers_per_batch_context", False):
             batch_glossary = prune_for_batch(glossary, [e.source for e in batch.representatives])
             batch_speakers = {e.speaker for e in batch.representatives if e.speaker}
@@ -193,64 +189,120 @@ async def _translate_batches_sync(batches, config, glossary, provider: Translati
         category_effort = category_rule.effort if category_rule and category_rule.effort else None
 
         system_prompt = build_system_prompt_for_category(config, batch.category, batch_glossary, batch_speakers)
-        user_payload = build_user_payload(batch)
+
+        accumulated: dict[int, str] = {}
+        if saved_drafts:
+            for idx, rep in enumerate(batch.representatives):
+                if rep.tm_key in saved_drafts:
+                    accumulated[idx] = saved_drafts[rep.tm_key]
+
         last_error = None
+        wasted_this_batch = 0
+
         for attempt in range(config.provider.max_retries):
+            missing_indices = [i for i in range(len(batch.representatives)) if i not in accumulated]
+            if not missing_indices:
+                break
+
+            if max_api_calls is not None and api_call_count[0] >= max_api_calls:
+                raise RuntimeError(f"Reached --max-api-calls budget limit ({max_api_calls}). Stopping cleanly.")
+            api_call_count[0] += 1
+
+            sub_reps = [batch.representatives[i] for i in missing_indices]
+            sub_batch = TranslationBatch(category=batch.category, representatives=sub_reps)
+            user_payload = build_user_payload(sub_batch)
+            if last_error:
+                user_payload += f"\n\n(Your previous response was invalid: {last_error}. Return ONLY the JSON array.)"
+
             start = time.monotonic()
-            raw = await _call_complete(
-                provider,
-                system_prompt,
-                user_payload,
-                max_tokens=config.provider.max_output_tokens,
-                effort=category_effort,
-            )
+            try:
+                raw = await _call_complete(
+                    provider,
+                    system_prompt,
+                    user_payload,
+                    max_tokens=config.provider.max_output_tokens,
+                    effort=category_effort,
+                )
+            except Exception as e:
+                latencies.append(time.monotonic() - start)
+                last_error = f"API call failed ({type(e).__name__}): {e}"
+                wasted_this_batch += 1
+                if attempt < config.provider.max_retries - 1:
+                    backoff = min(2 * (2 ** attempt), 20)
+                    print(f"  [{batch.category}] API call error on attempt {attempt + 1}/{config.provider.max_retries}: {e}. Retrying in {backoff}s...")
+                    await asyncio.sleep(backoff)
+                continue
             latencies.append(time.monotonic() - start)
-            parsed, error = parse_and_validate_response(raw)
-            if parsed is not None:
-                returned_ids = {item["id"] for item in parsed}
-                expected_ids = set(range(len(batch.representatives)))
-                missing_ids = expected_ids - returned_ids
-                if missing_ids:
-                    # A response that parses cleanly but only covers SOME of
-                    # the batch used to be accepted as a full success here --
-                    # the missing entries silently stayed NOT_STARTED, only
-                    # noticed much later by the file-level "unresolved" check,
-                    # by which point the file gets marked unfinished and NONE
-                    # of its entries (not even the ones that translated fine)
-                    # are in the TM yet -- so a retry next run re-translates
-                    # everything, not just what was actually missing. Treating
-                    # it as invalid here instead means the retry-with-
-                    # correction loop below gets a chance to recover the
-                    # missing ids in THIS call, before any of that is wasted.
-                    parsed = None
-                    error = f"response covered {len(returned_ids)}/{len(expected_ids)} items -- missing ids: {sorted(missing_ids)}"
-            if parsed is not None:
-                if attempt > 0:
-                    wasted_retries[0] += attempt
+            if attempt > 0 and len(accumulated) > 0:
+                partial_recovery_calls[0] += 1
+
+            parsed_res = parse_and_validate_response(raw)
+            parsed, error = parsed_res[0], parsed_res[1]
+            salvaged = getattr(parsed_res, "salvaged", False)
+
+            if parsed is None:
+                last_error = error
+                wasted_this_batch += 1
+                continue
+
+            # If bracket-append salvage fired on a truncated response, the final item's
+            # translation string may be cut mid-sentence. Exclude that final item from
+            # accumulated so it stays in missing_indices and gets retried with full context.
+            # Note: assumes the truncation boundary is in the tail element (the dominant
+            # case when hitting token limits). If truncated cleanly between elements, the
+            # tail item is complete and retranslating it costs one extra recovery call
+            # rather than risking committing a truncated string.
+            usable_items = parsed[:-1] if (salvaged and len(parsed) > 0) else parsed
+
+            # Map returned sub-batch IDs back to original representative indices
+            newly_recovered = 0
+            for item in usable_items:
+                sub_id = item.get("id")
+                if isinstance(sub_id, int) and 0 <= sub_id < len(missing_indices):
+                    orig_idx = missing_indices[sub_id]
+                    accumulated[orig_idx] = item["translation"]
+                    newly_recovered += 1
+
+            if newly_recovered == 0:
+                last_error = f"response covered 0 usable items (salvaged={salvaged})"
+                wasted_this_batch += 1
+                continue
+
+            last_error = None
+            if len(accumulated) == len(batch.representatives):
+                wasted_retries[0] += wasted_this_batch
+                if wasted_this_batch > 0:
                     print(
                         f"  [{batch.category}] succeeded on attempt {attempt + 1}/{config.provider.max_retries} "
-                        f"-- {attempt} wasted full-payload retry/retries before this. If this category keeps "
+                        f"-- {wasted_this_batch} wasted retry/retries before this. If this category keeps "
                         f"needing retries, its batch_size (currently {len(batch.representatives)} entries this "
                         f"batch) is likely too large for max_output_tokens "
                         f"({config.provider.max_output_tokens}) -- lower batch_size for it in project.yaml."
                     )
+                elif attempt > 0:
+                    print(
+                        f"  [{batch.category}] succeeded after {attempt + 1} requests via partial batch recovery "
+                        f"-- 0 wasted full-payload retries."
+                    )
                 drafts = {}
-                for item in parsed:
-                    rep = batch.representatives[item["id"]]
-                    rep.target = item["translation"]
+                for idx, rep in enumerate(batch.representatives):
+                    rep.target = accumulated[idx]
                     rep.status = EntryStatus.MT_DRAFT
                     rep.origin = "mt"
                     drafts[rep.tm_key] = rep.target
                 await asyncio.to_thread(checkpoint.save_batch_drafts, drafts)
                 return batch
-            last_error = error
-            user_payload += f"\n\n(Your previous response was invalid: {error}. Return ONLY the JSON array.)"
-        wasted_retries[0] += config.provider.max_retries
-        raise RuntimeError(f"batch in category '{batch.category}' failed after retries: {last_error}")
+
+        wasted_retries[0] += max(wasted_this_batch, config.provider.max_retries)
+        raise RuntimeError(
+            f"batch in category '{batch.category}' failed after retries: "
+            f"{last_error or f'incomplete: covered {len(accumulated)}/{len(batch.representatives)} items'}"
+        )
 
     failed: list[str] = []
     latencies: list[float] = []
     wasted_retries = [0]  # mutable cell so translate_one's closures can accumulate into it
+    partial_recovery_calls = [0]
     tasks = [asyncio.create_task(translate_one(b)) for b in batches]
     total = len(tasks)
     done_count = 0
@@ -264,7 +316,7 @@ async def _translate_batches_sync(batches, config, glossary, provider: Translati
             continue
         checkpoint.mark_batch_done(batch.category, len(batch.representatives))
         print(f"  [{done_count}/{total}] {batch.category}: {len(batch.representatives)} unique strings translated")
-    return failed, latencies, wasted_retries[0]
+    return failed, latencies, wasted_retries[0], partial_recovery_calls[0]
 
 
 async def _tier1_repair(
@@ -323,7 +375,9 @@ async def _tier1_repair(
                 batch_speakers = None
             category_rule = next((c for c in config.categories if c.name == category_name), None)
             category_effort = category_rule.effort if category_rule and category_rule.effort else None
-            system_prompt = build_system_prompt_for_category(config, category_name, batch_glossary, batch_speakers)
+            system_prompt = build_system_prompt_for_category(
+                config, category_name, batch_glossary, batch_speakers, correction_mode=True
+            )
             user_payload = build_retry_payload(entries, issues_by_key)
             try:
                 raw = await _call_complete(
@@ -484,8 +538,6 @@ def _finalize_file(
             bucket = zlib.crc32(e.key.encode('utf-8')) % 100
             if bucket < fidelity_bucket_threshold:
                 sampled_for_cat.append((e, vr, conf))
-        if not sampled_for_cat and cands:
-            sampled_for_cat.append(min(cands, key=lambda x: zlib.crc32(x[0].key.encode('utf-8'))))
         if len(sampled_for_cat) > 50:
             sampled_for_cat = sorted(sampled_for_cat, key=lambda x: zlib.crc32(x[0].key.encode('utf-8')))[:50]
 
@@ -760,6 +812,7 @@ def run(
     files_left_unfinished = 0
     sync_latencies: list[float] = []
     wasted_retry_attempts = 0
+    partial_recovery_calls = 0
     low_qa_calls = 0
     low_qa_repairs = 0
     low_qa_failures = 0
@@ -792,7 +845,7 @@ def run(
                 tm_hits += dedupe_result.tm_hits
                 unique_sent_to_llm += dedupe_result.total_unique_strings_to_translate
                 dedupe_result_by_file[str(path)] = dedupe_result
-                all_batches.extend(build_batches(dedupe_result.unique_groups, config))
+                all_batches.extend(build_batches(dedupe_result.unique_groups, config, provider))
             except Exception as e:
                 # Circuit breaker, extraction phase: a malformed input file
                 # (bad JSON, unreadable encoding, whatever) must not stop
@@ -965,7 +1018,7 @@ def run(
                     tm_hits += dedupe_result.tm_hits
                     unique_sent_to_llm += dedupe_result.total_unique_strings_to_translate
 
-                    file_batches = build_batches(dedupe_result.unique_groups, config)
+                    file_batches = build_batches(dedupe_result.unique_groups, config, provider)
                     file_entries_by_path[str(path)] = file_entries
                     dedupe_by_path[str(path)] = dedupe_result
                     window_batches.extend(file_batches)
@@ -986,12 +1039,13 @@ def run(
                     f"({len(file_entries_by_path)} file(s))"
                 )
 
-            failed, lat, wasted = asyncio.run(
+            failed, lat, wasted, part_calls = asyncio.run(
                 _translate_batches_sync(window_batches, config, glossary, provider, checkpoint, max_api_calls=max_api_calls)
             )
             sync_latencies.extend(lat)
             llm_calls_made += len(window_batches)
             wasted_retry_attempts += wasted
+            partial_recovery_calls += part_calls
 
             for path in window_files:
                 key = str(path)
@@ -1094,6 +1148,7 @@ def run(
         fidelity_failures=fidelity_failures,
         newly_committed_to_tm=newly_committed,
         wasted_retry_attempts=wasted_retry_attempts,
+        partial_recovery_calls=partial_recovery_calls,
         avg_translation_latency_s=avg_latency,
         cache_stats=cache_stats,
         low_qa_calls=low_qa_calls,
@@ -1109,13 +1164,21 @@ def run(
     return stats
 
 
-def plan(config: ProjectConfig, *, limit_batches: int | None = None) -> dict:
+def plan(
+    config: ProjectConfig,
+    *,
+    provider: Any = None,
+    limit_batches: int | None = None,
+    include_totals: bool = True,
+) -> dict:
     """Read-only: no LLM calls, no writes to the TM or batch files on disk.
     Runs the exact same per-file extract -> normalize -> classify -> dedupe ->
     TM-lookup -> batch-planning steps run() does, then stops, so you
     get real numbers for a project before spending anything —
     how much your actual duplicate ratio buys you, how many calls a
     run will really take, and a ballpark token estimate.
+    When include_totals=False, skips Pass 1 full-file extraction for lightweight
+    call budgeting.
     """
     adapter = get_adapter(config.format, {**config.format_options, "source_lang": config.source_lang, "target_lang": config.target_lang})
     glossary = load_glossary(config.resources.get("glossary"))
@@ -1142,19 +1205,20 @@ def plan(config: ProjectConfig, *, limit_batches: int | None = None) -> dict:
     all_batches = []
 
     try:
-        # Pass 1: ALL files — compute total_entries / already_translated for the
-        # full-project summary, and seed the in-memory TM so that cross-file TM
-        # hits are counted correctly in pass 2 even for already-finished files.
-        for path in batch_files:
-            file_entries = adapter.extract(path)
-            total_entries += len(file_entries)
-            classify_entries(file_entries, config, known_characters)
-            flag_disputed_terms(file_entries, glossary)
-            flag_expected_identity_terms(file_entries, glossary)
-            attach_narrative_context(file_entries, config)
-            file_already_translated = [e for e in file_entries if not e.is_empty_or_stub]
-            already_translated_count += len(file_already_translated)
-            commit_to_tm(file_already_translated, tm, config.source_lang, config.target_lang, origin="human")
+        if include_totals:
+            # Pass 1: ALL files — compute total_entries / already_translated for the
+            # full-project summary, and seed the in-memory TM so that cross-file TM
+            # hits are counted correctly in pass 2 even for already-finished files.
+            for path in batch_files:
+                file_entries = adapter.extract(path)
+                total_entries += len(file_entries)
+                classify_entries(file_entries, config, known_characters)
+                flag_disputed_terms(file_entries, glossary)
+                flag_expected_identity_terms(file_entries, glossary)
+                attach_narrative_context(file_entries, config)
+                file_already_translated = [e for e in file_entries if not e.is_empty_or_stub]
+                already_translated_count += len(file_already_translated)
+                commit_to_tm(file_already_translated, tm, config.source_lang, config.target_lang, origin="human")
 
         # Pass 2: PENDING files only — these are what a real run() would actually
         # process, so the LLM call count and token estimates reflect remaining work.
@@ -1169,7 +1233,7 @@ def plan(config: ProjectConfig, *, limit_batches: int | None = None) -> dict:
             tm_hits += dedupe_result.tm_hits
             unique_strings_needing_translation += dedupe_result.total_unique_strings_to_translate
 
-            file_batches = build_batches(dedupe_result.unique_groups, config)
+            file_batches = build_batches(dedupe_result.unique_groups, config, provider)
             all_batches.extend(file_batches)
     finally:
         tm.close()
@@ -1200,6 +1264,19 @@ def plan(config: ProjectConfig, *, limit_batches: int | None = None) -> dict:
     estimated_realistic_input_tokens = uncached_prompt_tokens + cached_read_tokens + unique_source_tokens
     caching_note = "Antigravity CLI runs as isolated subprocesses without persistent prompt-caching, so each batch pays full system prompt tokens."
 
+    ctx_limit = getattr(config.provider, "context_window_tokens", None) or getattr(provider, "context_window_tokens", None)
+    context_window_warning = None
+    if ctx_limit is not None:
+        for b in all_batches:
+            p_tok = prompt_tokens_by_category.get(b.category, 0)
+            s_tok = sum(est_tokens(e.source) for e in b.representatives)
+            if p_tok + s_tok > ctx_limit:
+                context_window_warning = (
+                    f"Warning: Batch in category '{b.category}' estimated at ~{p_tok + s_tok} tokens, "
+                    f"which exceeds declared context_window_tokens limit of {ctx_limit}."
+                )
+                break
+
     return {
         "total_entries": total_entries,
         "already_translated": already_translated_count,
@@ -1212,5 +1289,6 @@ def plan(config: ProjectConfig, *, limit_batches: int | None = None) -> dict:
         "estimated_output_tokens": estimated_output_tokens,
         "estimated_realistic_input_tokens": estimated_realistic_input_tokens,
         "caching_note": caching_note,
+        "context_window_warning": context_window_warning,
         "pending_files_count": len(pending_files),
     }

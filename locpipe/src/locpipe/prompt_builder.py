@@ -104,3 +104,49 @@ def toggle_section(template: str, start_marker: str, end_marker: str, *, keep: b
         middle = template[start_idx + len(start_marker):end_idx]
         return before + middle + after
     return before + after
+
+
+_PLACEHOLDER_RULES = {
+    "hu": (
+        "- If target language is Hungarian (hu):\n"
+        "  1. Always prefix dynamic placeholders, button glyphs, and variables with 'a(z) ' when a definite article "
+        "is required (e.g. \"a(z) {0}\", \"a(z) [BTN:R2 ]-t\").\n"
+        "  2. Hungarian marks grammatical case with suffixes whose exact form depends on the word they attach to. "
+        "Use a HYPHENATED suffix directly after the placeholder (e.g. \"{0}-hoz\", \"{item}-t\", \"{0}-val/-vel\"). "
+        "Never glue a suffix directly onto a placeholder/tag with no hyphen (e.g. \"{item}t\", \"{item}ban\")."
+    ),
+    "ja_target": (
+        "- If target language is Japanese (ja):\n"
+        "  Japanese attaches particles (は, が, を, に, で, へ, と, から, まで, の) naturally after placeholders "
+        "(e.g. \"{0}を\", \"{player}の\").\n"
+        "  Preserve all code tags, placeholders ({0}, %s, etc.), and control codes in exact half-width ASCII.\n"
+        "  Convert dialogue quotes to standard Japanese corner brackets 「...」 and book/title brackets 『...』."
+    ),
+    "en": (
+        "- If target language is English (en):\n"
+        "  Preserve standard English word order, prepositions, and plural markers (e.g. \"{0} items\", \"{item}s\")."
+    ),
+    "ja_source": (
+        "- If source language is Japanese (ja):\n"
+        "  Japanese corner brackets 「...」 must be localized to appropriate quotation marks in the target language "
+        "(\"...\" or „...\").\n"
+        "  Preserve game engine escape codes (\\n, \\C[...], \\V[...], etc.) and ruby annotations accurately."
+    ),
+}
+
+
+def get_placeholder_rules(source_lang: str = "en", target_lang: str = "hu") -> str:
+    """Return the configured language pair's placeholder and particle rules."""
+    src = str(source_lang).lower()
+    tgt = str(target_lang).lower()
+    rules = []
+    if tgt in ("hu", "hungarian"):
+        rules.append(_PLACEHOLDER_RULES["hu"])
+    elif tgt in ("ja", "japanese", "jpn"):
+        rules.append(_PLACEHOLDER_RULES["ja_target"])
+    elif tgt in ("en", "english"):
+        rules.append(_PLACEHOLDER_RULES["en"])
+    if src in ("ja", "japanese", "jpn"):
+        rules.append(_PLACEHOLDER_RULES["ja_source"])
+    return "\n".join(rules)
+

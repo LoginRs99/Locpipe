@@ -556,6 +556,17 @@ class ProjectsTab(ttk.Frame):
         )
         r_ee.pack(side=tk.LEFT)
 
+        # Row: Batch Output Token Cap (P2 Calibration Optimization)
+        r_cap = ttk.Frame(sec_prov, style="Card.TFrame")
+        r_cap.pack(fill=tk.X, pady=3)
+        self.var_prov_batch_cap = tk.StringVar(value="")
+        r_bc, _ = labeled_entry(
+            r_cap, "Batch Output Cap:", self.var_prov_batch_cap,
+            width=10, label_width=16,
+            tooltip="Maximum tokens reserved for batch output (P2 optimization). Leave blank for conservative default (4,500). Set to ~14,384 for 2-3x throughput boost after calibrating with 0 wasted retries."
+        )
+        r_bc.pack(side=tk.LEFT, padx=(0, 15))
+
         # Section: Language Resources & Style Presets
         sec_res = section_frame(form, "Language Resources & Style Presets", padding=10)
         sec_res.pack(fill=tk.X, pady=8)
@@ -602,6 +613,15 @@ class ProjectsTab(ttk.Frame):
             tooltip="Conservative zero-LLM heuristic that filters GUIDs, color codes, asset paths, and engine type names"
         )
         chk_noise.pack(anchor="w", pady=2)
+
+        # Naturalness gating (P13 experimental)
+        self.var_gate_naturalness = tk.BooleanVar(value=False)
+        chk_nat = labeled_checkbutton(
+            sec_opt, "Enable naturalness score gating (P13 experimental validation)",
+            self.var_gate_naturalness,
+            tooltip="Requires model to produce naturalness ratings and flags scores below threshold for Tier 1 review."
+        )
+        chk_nat.pack(anchor="w", pady=2)
 
         # Character replacements
         r_cr = ttk.Frame(sec_opt, style="Card.TFrame")
@@ -1010,10 +1030,11 @@ class ProjectsTab(ttk.Frame):
     def _bind_dirty_events(self):
         for var in [
             self.var_project_type, self.var_source_lang, self.var_target_lang, self.var_target_register, self.var_format,
-            self.var_batch_glob, self.var_noise_filter, self.var_char_replacements,
+            self.var_batch_glob, self.var_noise_filter, self.var_gate_naturalness, self.var_char_replacements,
             self.var_prov_model, self.var_prov_effort,
             self.var_prov_review_model, self.var_prov_review_effort,
-            self.var_prov_escalation_model, self.var_prov_escalation_effort
+            self.var_prov_escalation_model, self.var_prov_escalation_effort,
+            self.var_prov_batch_cap
         ]:
             var.trace_add("write", self._on_field_changed)
         self.txt_path_exclude.bind("<KeyRelease>", self._on_field_changed)
@@ -1144,9 +1165,14 @@ class ProjectsTab(ttk.Frame):
             self.var_prov_review_effort.set(provider_cfg.get("review_effort", "high"))
             self.var_prov_escalation_model.set(provider_cfg.get("escalation_model", "") or "")
             self.var_prov_escalation_effort.set(provider_cfg.get("escalation_effort", "") or "")
+            cap_val = provider_cfg.get("batch_output_token_cap")
+            self.var_prov_batch_cap.set(str(cap_val) if cap_val is not None else "")
 
             format_opts = self.raw_config.get("format_options", {})
             self.var_noise_filter.set(format_opts.get("noise_filter", True))
+
+            confidence_cfg = self.raw_config.get("confidence", {})
+            self.var_gate_naturalness.set(bool(confidence_cfg.get("gate_naturalness", False)))
 
             char_rep = format_opts.get("character_replacements", {})
             self.var_char_replacements.set(json.dumps(char_rep, ensure_ascii=False) if char_rep else "{}")
@@ -1268,6 +1294,7 @@ class ProjectsTab(ttk.Frame):
             "project_type": ptype,
             "source_lang": src,
             "target_lang": tgt,
+            "profile": "fast",
             "target_register": "informal",
             "format": fmt,
             "batches": {"glob": batch_glob},
@@ -1278,7 +1305,7 @@ class ProjectsTab(ttk.Frame):
                 "model": "gemini-3.8-flash",
                 "effort": "low",
                 "review_model": "gemini-3.8-flash",
-                "review_effort": "high",
+                "review_effort": "low",
                 "mode": "sync",
                 "max_concurrency": 2,
             },
@@ -1289,9 +1316,12 @@ class ProjectsTab(ttk.Frame):
             },
             "tm": {"db_path": "tm/translation_memory.sqlite3"},
             "confidence": {
-                "review_threshold": 0.75,
+                "review_threshold": 0.65,
                 "max_expansion_ratio": 1.6,
-                "tier1_repair_attempts": 2
+                "tier1_repair_attempts": 2,
+                "fidelity_sample_rate": 0.0,
+                "escalation_sample_rate": 0.0,
+                "review_chunk_size": 50
             }
         }
 
@@ -1428,6 +1458,20 @@ class ProjectsTab(ttk.Frame):
             cfg["provider"]["escalation_effort"] = esc_effort
         else:
             cfg["provider"].pop("escalation_effort", None)
+
+        batch_cap_str = self.var_prov_batch_cap.get().strip()
+        if batch_cap_str.isdigit():
+            cfg["provider"]["batch_output_token_cap"] = int(batch_cap_str)
+        else:
+            cfg["provider"].pop("batch_output_token_cap", None)
+
+        # Confidence options
+        if "confidence" not in cfg:
+            cfg["confidence"] = {}
+        if self.var_gate_naturalness.get():
+            cfg["confidence"]["gate_naturalness"] = True
+        else:
+            cfg["confidence"].pop("gate_naturalness", None)
 
         # Format options
         if "format_options" not in cfg:

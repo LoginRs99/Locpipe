@@ -88,18 +88,7 @@ class Checkpoint:
 
     def _save(self) -> None:
         with self._lock:
-            self.path.parent.mkdir(parents=True, exist_ok=True)
-            self.data["last_updated"] = time.time()
-            tmp_path = self.path.with_suffix(f".tmp.{threading.get_ident()}")
-            try:
-                tmp_path.write_text(json.dumps(self.data, indent=2), encoding="utf-8")
-                tmp_path.replace(self.path)
-            finally:
-                if tmp_path.exists():
-                    try:
-                        tmp_path.unlink()
-                    except OSError:
-                        pass
+            self._save_locked()
 
     def mark_batch_done(self, category: str, entry_count: int) -> None:
         with self._lock:
@@ -114,7 +103,14 @@ class Checkpoint:
         tmp_path = self.path.with_suffix(f".tmp.{threading.get_ident()}")
         try:
             tmp_path.write_text(json.dumps(self.data, indent=2), encoding="utf-8")
-            tmp_path.replace(self.path)
+            for attempt in range(3):
+                try:
+                    tmp_path.replace(self.path)
+                    break
+                except PermissionError:
+                    if attempt == 2:
+                        raise
+                    time.sleep(0.05)
         finally:
             if tmp_path.exists():
                 try:

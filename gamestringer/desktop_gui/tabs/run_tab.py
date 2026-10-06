@@ -121,7 +121,7 @@ class RunTab(ttk.Frame):
         self.btn_run = action_button(
             top_bar, "🚀 Run Translation (Antigravity CLI)", self._start_translation,
             style="Primary.TButton",
-            tooltip="Live execution: translates batch files using Antigravity CLI (Gemini 3.7 Flash) and writes output"
+            tooltip="Live execution: translates batch files using Antigravity CLI (gemini-3.8-flash) and writes output"
         )
         self.btn_run.pack(side=tk.LEFT, padx=(0, 6))
 
@@ -310,10 +310,16 @@ class RunTab(ttk.Frame):
         self._log(f"Filled from TM (0 cost):   {tm_hits:,}\n")
         self._log(f"Unique strings:            {unique:,} ({dedup_pct:.1f}% deduplication)\n")
         self._log(f"Total Batches:             {batches}\n")
+        calls_by_cat = res.get("calls_by_category", {})
+        if calls_by_cat:
+            for cat, n in sorted(calls_by_cat.items()):
+                self._log(f"    - {cat}: {n} call(s)\n", "muted")
         self._log(f"Estimated Total Input Tokens (no caching — Antigravity CLI): ~{realistic_input:,}\n")
         self._log(f"Estimated Target Output Tokens: ~{output_tokens:,}\n", "green")
         if caching_note:
             self._log(f"Note: {caching_note}\n", "muted")
+        if res.get("context_window_warning"):
+            self._log(f"  [ADVISORY] {res['context_window_warning']}\n", "yellow")
 
         stat_text = (
             f"Project: {config.project} | Batches: {batches} | Unique Strings: {unique:,} (dedup: {dedup_pct:.1f}%)\n"
@@ -329,6 +335,12 @@ class RunTab(ttk.Frame):
         if self.is_running:
             return
 
+        try:
+            config = load_project(self.current_project_dir)
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to load project: {e}", parent=self.root)
+            return
+
         proj_name = self.current_project_dir.name
         limit_val = self.var_limit.get().strip()
         limit_desc = f"{limit_val} batch(es) only" if limit_val.isdigit() else "NO LIMIT (Full Project)"
@@ -339,12 +351,13 @@ class RunTab(ttk.Frame):
         else:
             max_calls_desc = "UNLIMITED"
 
+        prov_info = f"{config.provider.name} ({config.provider.model}, effort: {config.provider.effort})"
         warning_msg = (
             f"Launch Live Translation Run?\n\n"
             f"• Project: {proj_name}\n"
             f"• Batch Scope: {limit_desc}\n"
             f"• Max API Calls: {max_calls_desc}\n"
-            f"• Provider: Antigravity CLI (Gemini 3.7 Flash)\n\n"
+            f"• Provider: {prov_info}\n\n"
         )
         if not (max_calls_val.isdigit() and int(max_calls_val) > 0):
             warning_msg += "⚠️ Warning: Max API Calls is UNLIMITED. If this is a large project, setting a safety ceiling (e.g. 500) is recommended to prevent unintended API usage.\n\n"
@@ -392,11 +405,13 @@ class RunTab(ttk.Frame):
 
         def worker():
             env = os.environ.copy()
+            repo_root = str(Path(__file__).resolve().parent.parent.parent.parent)
             locpipe_src = str(Path(__file__).resolve().parent.parent.parent.parent / "locpipe" / "src")
-            if "PYTHONPATH" in env:
-                env["PYTHONPATH"] = f"{locpipe_src}{os.pathsep}{env['PYTHONPATH']}"
+            paths = [repo_root, locpipe_src]
+            if "PYTHONPATH" in env and env["PYTHONPATH"]:
+                env["PYTHONPATH"] = f"{os.pathsep.join(paths)}{os.pathsep}{env['PYTHONPATH']}"
             else:
-                env["PYTHONPATH"] = locpipe_src
+                env["PYTHONPATH"] = os.pathsep.join(paths)
 
             try:
                 proc = subprocess.Popen(

@@ -23,6 +23,8 @@ class SuggestionResult:
     glossary_items: list[dict[str, str]] = field(default_factory=list)
     character_voices: list[dict[str, str]] = field(default_factory=list)
     suggested_path_excludes: list[str] = field(default_factory=list)
+    has_detected_speakers: bool = False
+    recommended_profile: str = "fast"
 
 
 def is_safe_path_exclude(pattern_str: str, entries: List[Entry]) -> bool:
@@ -152,6 +154,21 @@ async def analyze_project_and_suggest(
                 if is_safe_path_exclude(p_str, all_entries):
                     safe_excludes.append(p_str)
 
+    # Detect whether the game dump has explicit speaker info or character names in keys
+    has_speaker_field = any(bool(e.speaker and e.speaker.strip()) for e in all_entries[:500])
+    has_speaker_notes = any(any(isinstance(n, str) and "speaker:" in n.lower() for n in (e.notes or [])) for e in all_entries[:500])
+
+    char_names = {c.get("character", "").lower().strip() for c in data.get("character_voices", []) if c.get("character")}
+    has_char_keys = False
+    if char_names:
+        for e in all_entries[:500]:
+            k_lower = (e.key or "").lower()
+            if any(cn in k_lower for cn in char_names if len(cn) >= 3):
+                has_char_keys = True
+                break
+
+    has_detected_speakers = bool(has_speaker_field or has_speaker_notes or has_char_keys)
+
     return SuggestionResult(
         recommended_preset=rec_preset,
         preset_rationale=data.get("preset_rationale", ""),
@@ -159,4 +176,6 @@ async def analyze_project_and_suggest(
         glossary_items=data.get("glossary", []),
         character_voices=data.get("character_voices", []),
         suggested_path_excludes=safe_excludes,
+        has_detected_speakers=has_detected_speakers,
+        recommended_profile="fast",
     )

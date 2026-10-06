@@ -33,3 +33,9 @@ audit_report.md
 # OS
 .DS_Store
 Thumbs.db
+
+# Snapshots & Large Review Exports
+archive/code-snapshots/
+*.pdf
+*-code.md
+repomix*

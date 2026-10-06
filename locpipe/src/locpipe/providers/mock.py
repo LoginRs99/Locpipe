@@ -35,7 +35,8 @@ class MockProvider(TranslationProvider):
         effort: Optional[str] = None,
         response_format: str = "json",
     ) -> str:
-        parsed = json.loads(user_payload)
+        payload_json = user_payload.split("\n\n(Your previous response was invalid:")[0]
+        parsed = json.loads(payload_json)
 
         # 1. Bulk-translation shape: [{"id": 0, "source": "..."}, ...]
         if isinstance(parsed, list) and len(parsed) > 0 and isinstance(parsed[0], dict) and "id" in parsed[0]:

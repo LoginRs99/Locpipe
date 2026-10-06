@@ -68,10 +68,17 @@ def _get_spellchecker():
     return _SPELLCHECKER_INSTANCE
 
 
+_WORD_KNOWN_CACHE: dict[str, bool] = {}
+
+
 def is_hu_word_known(word: str, spell) -> bool:
     """Check if a word (or its plausible Hungarian stem) is in the dictionary."""
     w = word.lower()
+    if w in _WORD_KNOWN_CACHE:
+        return _WORD_KNOWN_CACHE[w]
+
     if not spell.unknown([w]):
+        _WORD_KNOWN_CACHE[w] = True
         return True
 
     # Try suffix stripping with vowel alternations (e.g. almá-t -> alma, szótár-ban -> szótár)
@@ -79,14 +86,18 @@ def is_hu_word_known(word: str, spell) -> bool:
         if w.endswith(suf) and len(w) - len(suf) >= 3:
             stem = w[:-len(suf)]
             if not spell.unknown([stem]):
+                _WORD_KNOWN_CACHE[w] = True
                 return True
             if stem.endswith("á"):
                 if not spell.unknown([stem[:-1] + "a"]):
+                    _WORD_KNOWN_CACHE[w] = True
                     return True
             elif stem.endswith("é"):
                 if not spell.unknown([stem[:-1] + "e"]):
+                    _WORD_KNOWN_CACHE[w] = True
                     return True
 
+    _WORD_KNOWN_CACHE[w] = False
     return False
 
 

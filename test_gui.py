@@ -489,4 +489,47 @@ def test_projects_tab_lang_style_presets(tk_root, tmp_path):
             assert ls_file.read_text(encoding="utf-8") == LANG_STYLE_PRESETS["Fantasy/archaikus (RPG, epikus fantasy)"]
 
 
+def test_projects_tab_batch_cap_and_naturalness(tk_root, tmp_path):
+    p1 = tmp_path / "locpipe" / "projects" / "proj_cap_test"
+    p1.mkdir(parents=True)
+    initial_yaml = (
+        "project: proj_cap_test\n"
+        "source_lang: en\n"
+        "target_lang: hu\n"
+        "format: generic_kv\n"
+        "provider:\n"
+        "  name: antigravity_cli\n"
+        "  model: gemini-3.8-flash\n"
+        "  batch_output_token_cap: 14384\n"
+        "confidence:\n"
+        "  gate_naturalness: true\n"
+    )
+    (p1 / "project.yaml").write_text(initial_yaml, encoding="utf-8")
+
+    with patch("gamestringer.desktop_gui.tabs.projects_tab.get_default_projects_dir", return_value=tmp_path / "locpipe" / "projects"):
+        tab = ProjectsTab(tk.Frame(tk_root), tk_root)
+        tab.select_project("proj_cap_test")
+
+        # Verify loaded values
+        assert tab.var_prov_batch_cap.get() == "14384"
+        assert tab.var_gate_naturalness.get() is True
+
+        # Modify values and save
+        tab.var_prov_batch_cap.set("8000")
+        tab.var_gate_naturalness.set(False)
+        assert tab.save_project() is True
+
+        # Check saved YAML
+        saved_data = yaml.safe_load((p1 / "project.yaml").read_text(encoding="utf-8"))
+        assert saved_data["provider"]["batch_output_token_cap"] == 8000
+        assert "gate_naturalness" not in saved_data.get("confidence", {})
+
+        # Clear batch cap and save
+        tab.var_prov_batch_cap.set("")
+        assert tab.save_project() is True
+        saved_data2 = yaml.safe_load((p1 / "project.yaml").read_text(encoding="utf-8"))
+        assert "batch_output_token_cap" not in saved_data2.get("provider", {})
+
+
+
 

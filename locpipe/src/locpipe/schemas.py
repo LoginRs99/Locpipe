@@ -35,7 +35,7 @@ from .character_voices import load_character_voice_rows, prune_character_voices_
 from .config import ProjectConfig
 from .glossary import GlossaryTerm, format_for_prompt
 from .models import Entry
-from .prompt_builder import fill, load_template, toggle_section, get_register_instruction
+from .prompt_builder import fill, load_template, toggle_section, get_register_instruction, get_placeholder_rules
 
 RESPONSE_SCHEMA = {
     "type": "array",
@@ -51,6 +51,7 @@ RESPONSE_SCHEMA = {
 }
 
 
+# TODO(human): consider a shorter lang-style.md/anti-fabrication-checklist.md variant for the no-cache path
 @lru_cache(maxsize=None)
 def _read(path: Optional[Path]) -> str:
     """Cached: lang-style.md / anti-fabrication-checklist.md are static
@@ -70,6 +71,7 @@ def build_system_prompt_for_category(
     category_name: str,
     glossary: list[GlossaryTerm],
     speakers: Optional[set[str]] = None,
+    correction_mode: bool = False,
 ) -> str:
     """speakers=None (the default) means "use the full character-voices
     file, unpruned" -- correct for a cache-capable provider, where the
@@ -93,6 +95,16 @@ def build_system_prompt_for_category(
     template = toggle_section(
         template, "%%CHARACTER_VOICE_SECTION_START%%", "%%CHARACTER_VOICE_SECTION_END%%", keep=needs_voice
     )
+    template = toggle_section(
+        template, "%%CORRECTION_MODE_SECTION_START%%", "%%CORRECTION_MODE_SECTION_END%%", keep=correction_mode
+    )
+    gate_naturalness = getattr(config, "gate_naturalness", None)
+    if gate_naturalness is None:
+        gate_naturalness = not needs_voice
+    keep_naturalness = needs_voice if gate_naturalness else True
+    template = toggle_section(
+        template, "%%NATURALNESS_SECTION_START%%", "%%NATURALNESS_SECTION_END%%", keep=keep_naturalness
+    )
 
     character_voices = ""
     if needs_voice:
@@ -108,12 +120,29 @@ def build_system_prompt_for_category(
         source_lang=config.source_lang,
         target_lang=config.target_lang,
         register_instruction=get_register_instruction(getattr(config, "target_register", "informal"), target_lang=config.target_lang),
+        target_placeholder_rules=get_placeholder_rules(config.source_lang, config.target_lang),
         category=category_name,
         glossary=format_for_prompt(glossary),
         style_guide=_read(config.resources.get("lang_style")),
         anti_fabrication=_read(config.resources.get("anti_fabrication_checklist")),
         character_voices=character_voices,
     )
+
+
+def _filter_notes_for_payload(notes: list[str]) -> list[str]:
+    """Filter noise notes at the LLM payload boundary only.
+
+    Drops notes with prefix 'asset:' or 'path:' (case-sensitive exact prefix with colon).
+    Truncates surviving notes to 200 chars and caps at 5 notes per item.
+    """
+    filtered = []
+    for note in notes:
+        if note.startswith("asset:") or note.startswith("path:"):
+            continue
+        filtered.append(note[:200])
+        if len(filtered) == 5:
+            break
+    return filtered
 
 
 def build_user_payload(batch: TranslationBatch) -> str:
@@ -125,7 +154,9 @@ def build_user_payload(batch: TranslationBatch) -> str:
         if e.max_length:
             item["max_length"] = e.max_length
         if e.notes:
-            item["notes"] = e.notes
+            filtered = _filter_notes_for_payload(e.notes)
+            if filtered:
+                item["notes"] = filtered
         if e.preceding_context:
             item["preceding_context"] = e.preceding_context
         items.append(item)
@@ -148,6 +179,10 @@ def build_retry_payload(entries: list[Entry], issues_by_key: dict[str, list[str]
             item["speaker"] = e.speaker
         if e.max_length:
             item["max_length"] = e.max_length
+        if e.notes:
+            filtered = _filter_notes_for_payload(e.notes)
+            if filtered:
+                item["notes"] = filtered
         issues = issues_by_key.get(e.key)
         if issues:
             item["issue"] = "; ".join(issues)
@@ -155,15 +190,43 @@ def build_retry_payload(entries: list[Entry], issues_by_key: dict[str, list[str]
     return json.dumps(items, ensure_ascii=False)
 
 
-def parse_and_validate_response(raw_text: str) -> tuple[Optional[list[dict]], Optional[str]]:
-    """Returns (parsed, error). error is None on success."""
+class ParseResult(tuple):
+    """2-tuple (parsed, error) with an extra `salvaged` boolean attribute.
+    Unpacks as `parsed, error = parse_and_validate_response(text)` for full backward compatibility,
+    while exposing `result.salvaged` to tell callers if bracket salvage fired on a truncated response.
+    """
+    parsed: Optional[list[dict]]
+    error: Optional[str]
+    salvaged: bool
+
+    def __new__(cls, parsed: Optional[list[dict]], error: Optional[str], salvaged: bool = False):
+        obj = super().__new__(cls, (parsed, error))
+        obj.parsed = parsed
+        obj.error = error
+        obj.salvaged = salvaged
+        return obj
+
+
+def parse_and_validate_response(raw_text: str) -> ParseResult:
+    """Returns ParseResult(parsed, error, salvaged). error is None on success."""
     import re
     text = raw_text.strip()
-    if text.startswith("```"):
-        text = text.strip("`")
-        if text.startswith("json"):
-            text = text[4:]
-        text = text.strip()
+    if "```" in text:
+        m = re.search(r"```(?:json)?\s*(\[.*?\])\s*```", text, re.DOTALL)
+        if m:
+            text = m.group(1).strip()
+        else:
+            text = text.strip("`")
+            if text.startswith("json"):
+                text = text[4:]
+            text = text.strip()
+    s_idx = text.find("[")
+    e_idx = text.rfind("]")
+    if s_idx != -1 and e_idx != -1 and e_idx > s_idx:
+        text = text[s_idx : e_idx + 1]
+    elif s_idx != -1:
+        text = text[s_idx:]
+    salvaged = False
     try:
         data = json.loads(text)
     except json.JSONDecodeError:
@@ -186,13 +249,14 @@ def parse_and_validate_response(raw_text: str) -> tuple[Optional[list[dict]], Op
                         t_strip += '"}]'
                 try:
                     data = json.loads(t_strip, strict=False)
+                    salvaged = True
                 except json.JSONDecodeError as e:
-                    return None, f"invalid JSON: {e}"
+                    return ParseResult(None, f"invalid JSON: {e}", False)
     try:
         jsonschema.validate(data, RESPONSE_SCHEMA)
     except jsonschema.ValidationError as e:
-        return None, f"schema mismatch: {e.message}"
+        return ParseResult(None, f"schema mismatch: {e.message}", False)
     ids = [item["id"] for item in data]
     if len(ids) != len(set(ids)):
-        return None, "duplicate ids in response"
-    return data, None
+        return ParseResult(None, "duplicate ids in response", False)
+    return ParseResult(data, None, salvaged)

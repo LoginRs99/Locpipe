@@ -1,0 +1,53 @@
+name: LocPipe Zero-Touch Localization CI
+
+on:
+  push:
+    paths:
+      - 'projects/**/batches/**'
+      - 'locpipe/projects/**/batches/**'
+  workflow_dispatch:
+    inputs:
+      project_path:
+        description: 'Path to target localization project'
+        required: true
+        default: 'locpipe/projects/SampleProject'
+      dry_run:
+        description: 'Run in dry-run mode (no billable API calls)'
+        type: boolean
+        default: false
+
+jobs:
+  zero-touch-localize:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install uv and dependencies
+        run: |
+          pip install uv
+          uv pip install --system -e ./locpipe
+
+      - name: Run Test Suite Verification
+        run: |
+          pytest locpipe/tests/test_final_qa_comprehensive.py
+
+      - name: Execute Zero-Touch Localization
+        run: |
+          PROJ="${{ github.event.inputs.project_path || 'locpipe/projects/SampleProject' }}"
+          DRY_FLAG="${{ github.event.inputs.dry_run == 'true' && '--dry-run' || '' }}"
+          locpipe auto --project "$PROJ" $DRY_FLAG
+
+      - name: Upload Bilingual & Review Reports
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: localization-reports
+          path: |
+            locpipe/projects/**/review/
+            locpipe/projects/**/tm/

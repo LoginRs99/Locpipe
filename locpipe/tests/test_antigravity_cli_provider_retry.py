@@ -97,6 +97,25 @@ def test_retries_on_empty_output_then_succeeds():
     assert "OK" in result
 
 
+def test_retries_on_truncated_or_unparseable_json():
+    calls = {"n": 0}
+
+    def fake_run(args, capture_output, timeout):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            # Truncated JSON output (cut off mid-sentence)
+            return _FakeProc(returncode=0, stdout=b'[{"id": 0, "translation": "Hahu')
+        return _FakeProc(stdout=b'[{"id": 0, "translation": "Teljes mondat"}]')
+
+    with patch("locpipe.providers.antigravity_cli_provider._BINARY", "/fake/agy"), \
+         patch("subprocess.run", side_effect=fake_run), \
+         patch("time.sleep", lambda s: None):
+        result = _make_provider()._run_agy("prompt", response_format="json")
+
+    assert calls["n"] == 2
+    assert "Teljes mondat" in result
+
+
 def test_does_not_retry_a_real_nonzero_exit():
     """A genuine failure (bad model name, auth error, ...) should fail
     immediately, not burn all 5 attempts retrying something a retry

@@ -84,7 +84,8 @@ class PseudoLocProvider(TranslationProvider):
         max_tokens: int = 8192,
         effort: Optional[str] = None,
     ) -> str:
-        parsed = json.loads(user_payload)
+        payload_json = user_payload.split("\n\n(Your previous response was invalid:")[0]
+        parsed = json.loads(payload_json)
 
         if isinstance(parsed, list):  # bulk-translation shape: [{"id", "source", ...}, ...]
             out = [

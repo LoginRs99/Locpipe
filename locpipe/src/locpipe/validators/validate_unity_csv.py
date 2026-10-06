@@ -92,17 +92,14 @@ def extract_tokens(text):
     return Counter(token_identity(span) for span in extract_balanced_spans(text))
 
 
-def main(argv):
-    argv, glossary_path = extract_glossary_arg(argv)
-    if not argv or "--source" not in argv or "--target" not in argv:
-        print(__doc__)
-        return 1
-
-    path = argv[0]
-    source_col = argv[argv.index("--source") + 1]
-    target_col = argv[argv.index("--target") + 1]
-
-    critical, major, info = [], [], []
+def validate_file(
+    path: str,
+    glossary_entries=None,
+    *,
+    source_col: str = "en",
+    target_col: str = "hu",
+) -> tuple[list[str], list[str], list[str], list[str]]:
+    critical, major, minor, info = [], [], [], []
 
     with open(path, "r", encoding="utf-8-sig", newline="") as f:
         reader = csv.DictReader(f)
@@ -115,11 +112,7 @@ def main(argv):
                 f"Ez nem a varhato Unity Localization csomag CSV formatum -- "
                 f"ellenorizd, hogy nem legacy/I2 exportrol van-e szo (ld. format-unity.md)."
             )
-            print(f"=== {path} ===")
-            print(f"-- CRITICAL ({len(critical)}) --")
-            for item in critical:
-                print(f"  - {item}")
-            return 1
+            return critical, major, minor, info
 
         if source_col not in fieldnames:
             critical.append(f"A megadott forras-oszlop ('{source_col}') nincs a fejlecben: {fieldnames}")
@@ -127,11 +120,7 @@ def main(argv):
             critical.append(f"A megadott celnyelvi oszlop ('{target_col}') nincs a fejlecben: {fieldnames}")
 
         if critical:
-            print(f"=== {path} ===")
-            print(f"-- CRITICAL ({len(critical)}) --")
-            for item in critical:
-                print(f"  - {item}")
-            return 1
+            return critical, major, minor, info
 
         seen_keys = {}
         empty_target = 0
@@ -169,18 +158,30 @@ def main(argv):
 
             html_issues = check_html_tags(source_val, target_val, f"Key='{key}'")
             if html_issues:
-                # The helper prefixes with id='Key...', we just want to ensure it looks ok
-                # Actually, check_html_tags appends "id='X'", we will pass key.
-                # html_issues will have strings like "id='Key': hianyzik..."
                 major.extend(html_issues)
 
     if empty_target:
         info.append(f"{empty_target} sornak ures a celnyelvi ('{target_col}') mezoje (fordítandó).")
     info.append(f"Osszesen {row_count} sor feldolgozva.")
 
-    if glossary_path:
-        entries = load_glossary_for_check(glossary_path)
-        major.extend(check_protected_terms(pairs, entries))
+    if glossary_entries:
+        major.extend(check_protected_terms(pairs, glossary_entries))
+
+    return critical, major, minor, info
+
+
+def main(argv):
+    argv, glossary_path = extract_glossary_arg(argv)
+    if not argv or "--source" not in argv or "--target" not in argv:
+        print(__doc__)
+        return 1
+
+    path = argv[0]
+    source_col = argv[argv.index("--source") + 1]
+    target_col = argv[argv.index("--target") + 1]
+
+    entries = load_glossary_for_check(glossary_path) if glossary_path else []
+    critical, major, minor, info = validate_file(path, entries, source_col=source_col, target_col=target_col)
 
     print(f"=== {path} ===")
     for label, items in (("CRITICAL", critical), ("MAJOR", major), ("INFO", info)):

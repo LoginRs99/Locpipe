@@ -32,8 +32,26 @@ def build_review_payload(items: list[ReviewItem], glossary: list[GlossaryTerm]) 
                 "confidence_flags": item.confidence_flags,
             }
         )
+
+    # Scoped glossary: union of item.relevant_glossary_terms across the chunk.
+    # Dedupe by (source_term, target_term), preserving first-seen order.
+    # If no item carries terms (attribute None or absent), fallback to provided glossary.
+    has_carried_terms = any(getattr(item, "relevant_glossary_terms", None) is not None for item in items)
+    if has_carried_terms:
+        seen: set[tuple[str, str]] = set()
+        scoped_terms: list[GlossaryTerm] = []
+        for item in items:
+            for term in (getattr(item, "relevant_glossary_terms", None) or []):
+                key = (term.source_term, term.target_term)
+                if key not in seen:
+                    seen.add(key)
+                    scoped_terms.append(term)
+        glossary_text = format_for_prompt(scoped_terms)
+    else:
+        glossary_text = format_for_prompt(glossary)
+
     return json.dumps(
-        {"glossary": format_for_prompt(glossary), "items": payload}, ensure_ascii=False
+        {"glossary": glossary_text, "items": payload}, ensure_ascii=False
     )
 
 
@@ -58,19 +76,33 @@ async def review_batch(
 
     async def _review_chunk(chunk: list[ReviewItem]) -> list[dict]:
         user_payload = build_review_payload(chunk, glossary)
-        try:
-            raw = await provider.complete(system_prompt, user_payload, max_tokens=max_output_tokens)
-            text = raw.strip().strip("`")
-            if text.startswith("json"):
-                text = text[4:].strip()
-            start_idx = text.find("[")
-            end_idx = text.rfind("]")
-            if start_idx != -1 and end_idx != -1 and end_idx > start_idx:
-                text = text[start_idx : end_idx + 1]
-            parsed = json.loads(text)
-            return parsed if isinstance(parsed, list) else []
-        except Exception:
-            return []
+        for attempt in range(3):
+            try:
+                raw = await provider.complete(system_prompt, user_payload, max_tokens=max_output_tokens)
+                text = raw.strip()
+                if "```" in text:
+                    import re
+                    m = re.search(r"```(?:json)?\s*(\[.*?\])\s*```", text, re.DOTALL)
+                    if m:
+                        text = m.group(1).strip()
+                    else:
+                        text = text.strip("`")
+                        if text.startswith("json"):
+                            text = text[4:].strip()
+                start_idx = text.find("[")
+                end_idx = text.rfind("]")
+                if start_idx != -1 and end_idx != -1 and end_idx > start_idx:
+                    text = text[start_idx : end_idx + 1]
+                parsed = json.loads(text)
+                if isinstance(parsed, list):
+                    return parsed
+            except Exception as e:
+                if attempt < 2:
+                    await asyncio.sleep(2 ** attempt + 1)
+                else:
+                    import logging
+                    logging.getLogger(__name__).warning("Review chunk of %d items failed after 3 attempts: %s", len(chunk), e)
+        return []
 
     # Concurrent, not sequential: each chunk is an independent network call,
     # and the provider already owns its own concurrency limit (see e.g.

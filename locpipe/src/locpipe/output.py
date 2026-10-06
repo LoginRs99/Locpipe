@@ -34,6 +34,7 @@ class RunStats:
     # for provider.max_output_tokens -- see config.py's ProviderConfig
     # docstring for the sizing math.
     wasted_retry_attempts: int = 0
+    partial_recovery_calls: int = 0
     avg_translation_latency_s: float = 0.0
     cache_stats: dict = field(default_factory=dict)
     low_qa_calls: int = 0
@@ -89,6 +90,8 @@ class RunStats:
                 f" | ⚠ {self.wasted_retry_attempts} wasted full-payload retry attempt(s) -- "
                 f"a batch_size is likely too large for max_output_tokens, see project.yaml"
             )
+        if self.partial_recovery_calls:
+            base += f" | {self.partial_recovery_calls} partial recovery call(s)"
         if self.still_blocked_after_all_tiers:
             base += (
                 f" | ⚠ {self.still_blocked_after_all_tiers} entries shipped as source-language "

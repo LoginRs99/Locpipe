@@ -151,6 +151,15 @@ def test_cli_commands():
         res_crc = runner.invoke(main, ["fix-catalog", "--input", tmpdir])
         assert res_crc.exit_code == 0
 
+        # Test help includes unified commands
+        res_help = runner.invoke(main, ["--help"])
+        assert res_help.exit_code == 0
+        assert "plan" in res_help.output
+        assert "run" in res_help.output
+        assert "audit" in res_help.output
+        assert "verify" in res_help.output
+        assert "gui" in res_help.output
+
 
 if __name__ == "__main__":
     test_font_checker_unsupported_engine()

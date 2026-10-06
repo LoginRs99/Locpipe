@@ -29,7 +29,7 @@ Given that, this wrapper:
      a non-zero exit with output on stderr -- that's treated as a real
      error (bad model name, auth failure, ...) worth surfacing immediately
      rather than burning attempts on something a retry can't fix;
-   5. passes the prompt as a positional CLI argument to `agy --print`;
+   5. writes the prompt to a temporary UTF-8 file and passes its path to `agy --print`;
   6. asks pipeline.py for a per-batch pruned prompt instead of the
      category-level full-context one other providers get
      (`prefers_per_batch_context = True`) -- there's no persistent
@@ -68,10 +68,21 @@ from .base import TranslationProvider
 logger = logging.getLogger(__name__)
 
 
+_last_cleanup_ts: float = 0.0
+
+
 def _cleanup_antigravity_session(temp_prompt_path: str) -> None:
     """Removes the temporary conversation directory in ~/.gemini/antigravity-cli/brain/
     AND the corresponding sqlite database in ~/.gemini/antigravity-cli/conversations/
-    created by Antigravity CLI for this batch chunk prompt, keeping the session list clean."""
+    created by Antigravity CLI for this batch chunk prompt, keeping the session list clean.
+    Debounced process-wide to at most once every 600 seconds.
+    """
+    global _last_cleanup_ts
+    now = time.time()
+    if now - _last_cleanup_ts < 600.0:
+        return
+    _last_cleanup_ts = now
+
     try:
         home_cli = Path.home() / ".gemini" / "antigravity-cli"
         brain_dir = home_cli / "brain"
@@ -147,6 +158,8 @@ class AntigravityCLIProvider(TranslationProvider):
     #: character voices both), not the category-level full-context one
     #: other providers benefit from caching.
     prefers_per_batch_context = True
+    max_input_chars: int | None = None
+    context_window_tokens: int | None = None
 
     def __init__(
         self,
@@ -179,7 +192,12 @@ class AntigravityCLIProvider(TranslationProvider):
             self._semaphores[loop] = asyncio.Semaphore(self.max_concurrency)
         return self._semaphores[loop]
 
-    def _run_agy(self, full_prompt: str, effort: Optional[str] = None) -> str:
+    def _run_agy(
+        self,
+        full_prompt: str,
+        effort: Optional[str] = None,
+        response_format: str = "json",
+    ) -> str:
         # To avoid Windows command-line character length limit (32,767 chars),
         # write the full prompt to a temporary UTF-8 text file and pass its path to `agy --print`.
         with tempfile.NamedTemporaryFile(
@@ -198,10 +216,20 @@ class AntigravityCLIProvider(TranslationProvider):
             pass
 
         effective_effort = effort or self.effort
+        if response_format == "json":
+            prompt_instruction = (
+                "Output ONLY the raw valid JSON array as requested in the instructions, "
+                "with no conversational commentary, from prompt file: " + temp_prompt_path
+            )
+        else:
+            prompt_instruction = (
+                "Output ONLY the requested response without commentary from prompt file: " + temp_prompt_path
+            )
+
         args = [
             _BINARY,
             "--print",
-            temp_prompt_path,
+            prompt_instruction,
             "--model", self.model,
             # Required, not optional, in headless --print mode: agy's own
             # headless mode ignores permissions.allow from settings.json
@@ -248,7 +276,8 @@ class AntigravityCLIProvider(TranslationProvider):
                             max_attempts,
                         )
                         raise RuntimeError(f"agy timed out after {self.timeout_s}s on every attempt ({max_attempts})")
-                    time.sleep(3 * attempt_num)
+                    backoff = [2, 4, 8, 12][min(attempt, 3)]
+                    time.sleep(backoff)
                     continue
 
                 stdout = proc.stdout.decode("utf-8", errors="replace").strip() if proc.stdout else ""
@@ -258,19 +287,71 @@ class AntigravityCLIProvider(TranslationProvider):
                 last_stdout = stdout
 
                 if proc.returncode == 0 and stdout:
+                    if response_format == "json":
+                        text_check = stdout.strip().strip("`")
+                        if text_check.startswith("json"):
+                            text_check = text_check[4:].strip()
+                        s_idx = text_check.find("[")
+                        e_idx = text_check.rfind("]")
+                        if s_idx != -1 and e_idx != -1 and e_idx > s_idx:
+                            text_check = text_check[s_idx : e_idx + 1]
+                        try:
+                            json.loads(text_check)
+                            return stdout
+                        except json.JSONDecodeError:
+                            import re
+                            text_clean = re.sub(r"[\x00-\x1f\x7f-\x9f]", " ", text_check)
+                            try:
+                                json.loads(text_clean, strict=False)
+                                return stdout
+                            except json.JSONDecodeError:
+                                logger.warning(
+                                    "agy returned unparseable/truncated JSON on attempt %d/%d (output length %d). Retrying with backoff...",
+                                    attempt_num,
+                                    max_attempts,
+                                    len(stdout),
+                                )
+                                backoff = [1, 2, 4, 8][min(attempt, 3)]
+                                time.sleep(backoff)
+                                continue
                     return stdout
 
+                combined_err = (stderr + " " + stdout).lower()
                 is_transient = any(
-                    err_str in stderr or err_str in stdout
+                    err_str in combined_err
                     for err_str in (
-                        "RESOURCE_EXHAUSTED",
+                        "resource_exhausted",
                         "429",
                         "503",
                         "500",
-                        "UNAVAILABLE",
-                        "DEADLINE_EXCEEDED",
-                        "Overloaded",
-                        "Service Unavailable",
+                        "502",
+                        "504",
+                        "unavailable",
+                        "deadline_exceeded",
+                        "overloaded",
+                        "service unavailable",
+                        "bad gateway",
+                        "gateway timeout",
+                        "rate limit",
+                        "ratelimit",
+                        "too many requests",
+                        "quota exceeded",
+                        "connection reset",
+                        "connection refused",
+                        "network is unreachable",
+                        "getaddrinfo",
+                        "enotfound",
+                        "eai_again",
+                        "econnreset",
+                        "econnrefused",
+                        "etimedout",
+                        "timed out",
+                        "timeout",
+                        "client.timeout",
+                        "fetch failed",
+                        "broken pipe",
+                        "socket hang up",
+                        "unexpected eof",
                     )
                 )
                 if is_transient:
@@ -281,7 +362,8 @@ class AntigravityCLIProvider(TranslationProvider):
                         proc.returncode,
                         stderr[:300] or stdout[:300],
                     )
-                    time.sleep(5 * attempt_num)
+                    backoff = [2, 5, 10, 20][min(attempt, 3)]
+                    time.sleep(backoff)
                     continue
 
                 if proc.returncode != 0:
@@ -303,7 +385,8 @@ class AntigravityCLIProvider(TranslationProvider):
                         proc.returncode,
                         stderr[:300],
                     )
-                    time.sleep(2 * attempt_num)
+                    backoff = [1, 2, 4, 8][min(attempt, 3)]
+                    time.sleep(backoff)
                     continue
 
             logger.error(
@@ -342,8 +425,11 @@ class AntigravityCLIProvider(TranslationProvider):
         else:
             full_prompt = f"{system_prompt}\n\n--- INPUT ---\n{user_payload}\n"
 
+        # Open design question for team discussion: Should semaphore acquisition wrap the entire
+        # complete() call (including Gate 3 JSON parsing/validation) or only the raw subprocess
+        # invocation in _run_agy? Keeping existing scope intact for now.
         async with self.semaphore:
-            stdout = await asyncio.to_thread(self._run_agy, full_prompt, effort)
+            stdout = await asyncio.to_thread(self._run_agy, full_prompt, effort, response_format)
 
         if response_format != "json":
             return stdout.strip()

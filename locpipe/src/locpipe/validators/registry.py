@@ -100,8 +100,6 @@ def run_validator(
         return result
 
     if format_name in _SUBPROCESS_SCRIPT:
-        script = _VALIDATORS_DIR / _SUBPROCESS_SCRIPT[format_name]
-        argv = [str(path)]
         if format_name == "unity":
             missing = [k for k in ("source_col", "target_col") if k not in format_kwargs]
             if missing:
@@ -109,6 +107,32 @@ def run_validator(
                     f"format 'unity' requires {missing} in project.yaml's "
                     f"format_kwargs, but {'it is' if len(missing) == 1 else 'they are'} missing"
                 )
+            try:
+                from . import validate_unity_csv
+                glossary_entries = load_glossary_for_check(str(glossary_path)) if glossary_path else []
+                critical, major, minor, info = validate_unity_csv.validate_file(
+                    str(path),
+                    glossary_entries,
+                    source_col=format_kwargs["source_col"],
+                    target_col=format_kwargs["target_col"],
+                )
+                for sev, items in (
+                    (Severity.CRITICAL, critical),
+                    (Severity.MAJOR, major),
+                    (Severity.MINOR, minor),
+                    (Severity.INFO, info),
+                ):
+                    for msg in items:
+                        getattr(result, sev.value.lower()).append(
+                            ValidationIssue(severity=sev, code=format_name, message=msg)
+                        )
+                return result
+            except Exception:
+                pass  # Fall back to subprocess script below
+
+        script = _VALIDATORS_DIR / _SUBPROCESS_SCRIPT[format_name]
+        argv = [str(path)]
+        if format_name == "unity":
             argv += ["--source", format_kwargs["source_col"], "--target", format_kwargs["target_col"]]
         if glossary_path:
             argv += ["--glossary", str(glossary_path)]
