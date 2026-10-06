@@ -28,7 +28,8 @@ def test_p2_antigravity_cli_invocation_uses_temp_file(tmp_path):
     """Regression test locking required transport behavior:
     agy --print <path.txt>, no full prompt in argv, temp file contains prompt.
     """
-    provider = AntigravityCLIProvider(model="gemini-3.8-flash")
+    with patch("locpipe.providers.antigravity_cli_provider._BINARY", "/fake/agy"):
+        provider = AntigravityCLIProvider(model="gemini-3.8-flash")
     test_prompt = "Translate these 100 game dialogue lines with specific characters: " + ("abc " * 50)
 
     with patch("subprocess.run") as mock_run:
@@ -60,7 +61,8 @@ def test_p2_provider_capabilities_attributes():
     assert base.max_input_chars == 24000
     assert base.context_window_tokens is None
 
-    agy = AntigravityCLIProvider(model="gemini-3.8-flash")
+    with patch("locpipe.providers.antigravity_cli_provider._BINARY", "/fake/agy"):
+        agy = AntigravityCLIProvider(model="gemini-3.8-flash")
     assert agy.max_input_chars is None
     assert agy.context_window_tokens is None
 
@@ -101,7 +103,8 @@ def test_p2_batcher_caps_respects_provider(tmp_path):
         provider=ProviderConfig(max_output_tokens=16384, batch_output_token_cap=14000),
         tm_db_path=tmp_path / "tm.sqlite3",
     )
-    agy_prov = AntigravityCLIProvider(model="gemini-3.8-flash")
+    with patch("locpipe.providers.antigravity_cli_provider._BINARY", "/fake/agy"):
+        agy_prov = AntigravityCLIProvider(model="gemini-3.8-flash")
     batches_b = build_batches(unique_groups, cfg_state_b, provider=agy_prov)
 
     # With higher cap and higher batch_size, batches_b packs into fewer batches

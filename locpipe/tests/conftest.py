@@ -23,6 +23,14 @@ def test_hygiene_teardown():
     gc.collect()
 
 
+@pytest.fixture(autouse=True)
+def mock_agy_binary_if_missing(monkeypatch):
+    """Ensure tests run smoothly on CI runners (e.g. GitHub Actions) where agy binary is not installed on PATH."""
+    import locpipe.providers.antigravity_cli_provider as agy_mod
+    if agy_mod._BINARY is None:
+        monkeypatch.setattr(agy_mod, "_BINARY", "/mock/bin/agy")
+
+
 def pytest_sessionfinish(session, exitstatus):
     """Teardown hook executed after the entire test suite completes.
     Sweeps any temporary files or orphaned SQLite databases in the locpipe root.
