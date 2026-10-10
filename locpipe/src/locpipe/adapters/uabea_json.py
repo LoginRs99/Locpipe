@@ -490,13 +490,33 @@ class UABEAJsonAdapter(FormatAdapter):
                             continue
                     if audit_sink is not None:
                         audit_sink.append((f"[{idx}]", src_val, "kept"))
+                    context_val = item.get("context") or item.get("path") or item.get("file_context")
+                    speaker_val = item.get("speaker") or item.get("character") or item.get("speaker_name")
                     row_id = item.get("internal_path") or item.get("id") or item.get("key") or f"idx_{idx}"
-                    entry_key = f"{asset_name}:{row_id}:{idx}"
+
+                    if context_val:
+                        entry_key = f"{asset_name}:{context_val}:{row_id}:{idx}"
+                    else:
+                        entry_key = f"{asset_name}:{row_id}:{idx}"
+
+                    notes: List[str] = []
+                    if context_val:
+                        notes.append(f"context:{context_val}")
+                    if item.get("notes"):
+                        notes.append(str(item["notes"]))
+                    if item.get("comment"):
+                        notes.append(str(item["comment"]))
+
                     extra = {
                         "uabea_structure": "json_array",
                         "array_index": idx,
                         "id": row_id,
                     }
+                    if context_val:
+                        extra["context"] = context_val
+                    if speaker_val:
+                        extra["speaker"] = speaker_val
+
                     item_limit = None
                     char_lim = item.get("m_CharacterLimit")
                     if isinstance(char_lim, int) and char_lim > 0:
@@ -509,6 +529,8 @@ class UABEAJsonAdapter(FormatAdapter):
                             target=tgt_val if isinstance(tgt_val, str) else "",
                             max_length=item_limit,
                             namespace=asset_name,
+                            notes=notes if notes else None,
+                            speaker=speaker_val if speaker_val else None,
                             extra=extra,
                         )
                     )

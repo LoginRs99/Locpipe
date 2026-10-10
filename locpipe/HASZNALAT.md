@@ -186,12 +186,12 @@ categories:
   - name: dialogue
     match_speaker_present: true
     needs_character_voice: false # false, ha a dump kulcsai nem tartalmaznak konkrét karakterneveket
-    batch_size: 200
+    batch_size: 100              # 80-100: megszünteti a JSON csonkolást, 20-30 mp/hívás
     max_expansion_ratio: 1.8
   - name: ui
     default: true
     needs_character_voice: false
-    batch_size: 200
+    batch_size: 120              # 100-120: optimális tömör UI gombokhoz
     max_expansion_ratio: 1.3
 
 provider:
@@ -221,6 +221,7 @@ tm:
 confidence:
   review_threshold: 0.65    # fast: 0.65 | balanced: 0.70 | thorough: 0.75
   tier1_repair_attempts: 2
+  allow_identical_proper_nouns: true  # Nem küldi felesleges felülvizsgálatra a változatlan neveket (Rosa, Balder, OK)
 ```
 
 ### Profilok & Token Optimalizálás (Sebesség vs. Költség vs. Minőség)

@@ -33,7 +33,7 @@ class CategoryRule:
     match_source_regex: Optional[str] = None
     match_speaker_present: Optional[bool] = None
     needs_character_voice: bool = False
-    batch_size: int = 200
+    batch_size: int = 100
     is_default: bool = False
     # Override the project-wide confidence.max_expansion_ratio for just this
     # category. None = use the project default. Point of this: a UI/button
@@ -240,6 +240,7 @@ class ProjectConfig:
     translate_file_window: int = 8
     preflight: "PreflightConfig" = field(default_factory=lambda: PreflightConfig())
     gate_naturalness: bool = False
+    allow_identical_proper_nouns: bool = True
 
     @property
     def batch_files(self) -> list[Path]:
@@ -287,7 +288,7 @@ def load_project(project_dir: str | Path) -> ProjectConfig:
     }
 
     categories_raw = raw.get("categories") or [
-        {"name": "default", "default": True, "batch_size": 200}
+        {"name": "default", "default": True, "batch_size": 100}
     ]
     categories = [
         CategoryRule(
@@ -297,7 +298,7 @@ def load_project(project_dir: str | Path) -> ProjectConfig:
             match_notes_regex=c.get("match_notes_regex"),
             match_speaker_present=c.get("match_speaker_present"),
             needs_character_voice=c.get("needs_character_voice", False),
-            batch_size=c.get("batch_size", 350),
+            batch_size=c.get("batch_size", 100),
             is_default=c.get("default", False),
             max_expansion_ratio=c.get("max_expansion_ratio"),
             default_max_length=c.get("default_max_length"),
@@ -390,4 +391,5 @@ def load_project(project_dir: str | Path) -> ProjectConfig:
         translate_file_window=raw.get("translate_file_window", 8),
         preflight=preflight,
         gate_naturalness=raw.get("gate_naturalness", False),
+        allow_identical_proper_nouns=bool(confidence_raw.get("allow_identical_proper_nouns", True)),
     )

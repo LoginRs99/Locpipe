@@ -148,7 +148,7 @@ def build_batches(
         by_category.setdefault(rep.category or "default", []).append(rep)
 
     batches: list[TranslationBatch] = []
-    max_output_tokens_cap = config.provider.batch_output_token_cap or min(8000, config.provider.max_output_tokens - 1000)
+    max_output_tokens_cap = config.provider.batch_output_token_cap or min(3500, config.provider.max_output_tokens - 1000)
     provider_max_input_chars = provider.max_input_chars if provider is not None else 24000
 
     for category_name, reps in by_category.items():

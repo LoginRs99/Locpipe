@@ -30,6 +30,7 @@ locpipe audit --project "locpipe/projects/<Project Name>"
 ```
 * Verify kept vs. engine-noise breakdown.
 * Ensure dialogue and UI strings are not mistakenly caught in noise filters.
+* **Category Alignment Check:** Inspect the category breakdown table in the audit output. If 100% of strings fall into the fallback default category, regex rules (`match_key_regex`, `match_notes_regex`) are misaligned with adapter keys/context! Fix the category regex rules before running translation, otherwise character voices and specialized expansion caps will be bypassed.
 
 ### Stage 2: Staged Canary Test (Mandatory Safety Checkpoint)
 Never execute a full unattended run on a new or modified project without a bounded canary test:
@@ -48,7 +49,10 @@ Once approved, execute the full localization run:
   locpipe auto --project "locpipe/projects/<Project Name>"
   ```
 * **External PowerShell Terminal (Recommended for large runs):**
-  Advise the user to run `locpipe run` in an external terminal window to prevent subagent session flooding in IDE conversation transcripts.
+  Advise the user to run the process in an external PowerShell terminal to prevent subagent session flooding. Use this exact single-line command:
+  ```powershell
+  Set-Location "D:\github\GameStringer-main\locpipe"; python -m locpipe.cli run --project "projects/<Project Name>"
+  ```
 
 ### Stage 4: Post-Run Integrity Verification
 Prove that non-translatable engine noise and excluded asset paths were completely untouched:
@@ -65,8 +69,8 @@ In production, GameStringer and LocPipe use **Google Gemini 3.8 Flash** via the 
 
 | Task Role | Model | Effort Level | Batch Size | Rationale |
 |---|---|---|---|---|
-| **Bulk Batch Translation** | `gemini-3.8-flash` | `effort: low` | `batch_size: 200` | Ultra-fast throughput (~6s/call), wide context window, zero truncation, cost-effective. |
-| **Review & Automated Repair** | `gemini-3.8-flash` | `effort: low` (fast/balanced) or `high` (thorough) | `review_batch_size: 25-30` | `low` effort is sufficient for 95% of repairs; `high` is reserved for complex tone/escalation. |
+| **Bulk Batch Translation** | `gemini-3.8-flash` | `effort: low` | `batch_size: 80-100` (dialogue)<br/>`batch_size: 120` (UI) | Ultra-fast throughput (~20-30s/call), zero truncation retries, cost-effective. |
+| **Review & Automated Repair** | `gemini-3.8-flash` | `effort: low` (fast/balanced) or `high` (thorough) | `review_chunk_size: 25-30` | `low` effort is sufficient for 95% of repairs; `high` is reserved for complex tone/escalation. |
 
 ---
 
@@ -79,9 +83,9 @@ Understanding which pipeline step consumes tokens and how to optimize each phase
 | **1. Extraction & Noise Audit** | `locpipe audit` | **0 tokens (Zero Cost)** | *None (Deterministic)* | N/A | Pure regex & format parsing. Filters binary IDs and engine metadata before LLM ever runs. |
 | **2. Pre-flight Planning & TM Check** | `locpipe plan` | **0 tokens (Zero Cost)** | *None (Deterministic)* | N/A | Checks SQLite TM for 100% hits, estimates tokens, verifies font glyphs (ő, ű). |
 | **3. Resource Discovery (Optional)** | `locpipe auto-suggest` | **1 LLM call (~2k tokens)** | `gemini-3.8-flash` (`effort: low`) | 40 strings sample | Discovers game genre, suggests style guide preset, and drafts initial glossary terms. |
-| **4. Bulk Translation (Phase 1)** | `locpipe run` | **1 call per batch** (~3k-5k tokens) | `gemini-3.8-flash` (`effort: low`) | `batch_size: 200` | **Crucial:** `effort: low` executes in ~6s (vs 12-40s with `high`) with 0 wasted thinking tokens. |
+| **4. Bulk Translation (Phase 1)** | `locpipe run` | **1 call per batch** (~2k-4k tokens) | `gemini-3.8-flash` (`effort: low`) | `80-100` (dialogue)<br/>`120` (UI) | **Crucial:** Sizing at 80-100 eliminates truncated JSON retries (output length > 9k chars) and cuts call time to ~20-30s. |
 | **5. Tier 1 Mechanical Repair (Phase 2)** | Automatic in pipeline | **0 tokens (Zero Cost)** | *None (Python Code)* | N/A | Repairs unbalanced quotes, accidental whitespace, and regex tag preservation without LLM. |
-| **6. Review & Style Repair (Phase 3)** | Automatic in pipeline | **1 call per flagged group** | `gemini-3.8-flash` (`effort: low`) | `review_chunk_size: 30` | Only processes strings with confidence < threshold or missing glossary terms. |
+| **6. Review & Style Repair (Phase 3)** | Automatic in pipeline | **1 call per flagged group** | `gemini-3.8-flash` (`effort: low`) | `review_chunk_size: 30` | Only processes strings with confidence < threshold or missing glossary terms. Proper nouns (Rosa, Balder, OK) are immune to false-positive review flooding. |
 | **7. Escalation Repair (Optional)** | Automatic in pipeline | **Only on persistent failures** | `gemini-3.8-flash` (`effort: high`) | Single string | Final safety net for items failing 2 consecutive review passes. |
 
 ---
@@ -133,10 +137,17 @@ provider:
 
 categories:
   - name: dialogue
-    batch_size: 200          # Optimal payload size (safe under 16k output tokens)
+    match_speaker_present: true
+    needs_character_voice: true
+    batch_size: 100          # 80-100 entries: eliminates JSON truncation & cuts latency to ~20-30s
+    max_expansion_ratio: 1.8
   - name: ui
     default: true
-    batch_size: 200
+    batch_size: 120          # 120 entries: optimal for short labels
+    max_expansion_ratio: 1.4
+
+confidence:
+  allow_identical_proper_nouns: true  # Prevents flooding review with unchanged names (Rosa, Balder, OK)
 ```
 
 ---

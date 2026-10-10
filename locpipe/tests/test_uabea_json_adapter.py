@@ -304,3 +304,81 @@ def test_i2_languagesource_extraction_and_merge():
         assert merged_data["mTerms"]["Array"][0]["Languages"]["Array"][0] == "Névjegy"
         assert merged_data["mTerms"]["Array"][0]["Languages"]["Array"][1] == "À propos"
 
+
+def test_json_array_context_and_speaker_propagation():
+    """Verify that JSON array items propagate context, speaker, and notes into Entry,
+    allowing category regex matching against both key and notes.
+    """
+    sample_array = [
+        {
+            "id": 101,
+            "source": "Shuraba is a demon-forged blade.",
+            "target": "",
+            "context": "mm/mmWPN001_us.dat:mmWPN001.mcd",
+            "speaker": "Rodin",
+            "comment": "weapon description",
+        },
+        {
+            "id": 102,
+            "source": "Don't be reckless, Cereza!",
+            "target": "",
+            "context": "evm_c010_us.dat",
+            "speaker": "Jeanne",
+        },
+        {
+            "id": 103,
+            "source": "Options",
+            "target": "",
+        },
+    ]
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        file_path = Path(tmp_dir) / "batch_0000.json"
+        file_path.write_text(json.dumps(sample_array), encoding="utf-8")
+
+        adapter = UABEAJsonAdapter()
+        entries = adapter.extract(file_path)
+
+        assert len(entries) == 3
+
+        # Entry 1: Weapon with context and speaker
+        e1 = entries[0]
+        assert e1.speaker == "Rodin"
+        assert "context:mm/mmWPN001_us.dat:mmWPN001.mcd" in e1.notes
+        assert "weapon description" in e1.notes
+        assert "mmWPN001" in e1.key
+        assert e1.extra["context"] == "mm/mmWPN001_us.dat:mmWPN001.mcd"
+        assert e1.extra["speaker"] == "Rodin"
+
+        # Verify CategoryRule matching against key and speaker
+        from locpipe.config import CategoryRule
+        rule_wpn = CategoryRule(name="weapons", match_key_regex=r"(:|^)(mmWPN)")
+        assert rule_wpn.matches(e1) is True
+
+        rule_speaker = CategoryRule(name="dialogue", match_speaker_present=True)
+        assert rule_speaker.matches(e1) is True
+
+        # Entry 2: Cutscene with evm_ context and Jeanne speaker
+        e2 = entries[1]
+        assert e2.speaker == "Jeanne"
+        assert "evm_c010" in e2.key
+        assert "context:evm_c010_us.dat" in e2.notes
+        rule_cutscene = CategoryRule(name="cutscenes", match_key_regex=r"(:|^)(evm_)")
+        assert rule_cutscene.matches(e2) is True
+
+        # Entry 3: Fallback without context/speaker
+        e3 = entries[2]
+        assert e3.speaker is None
+        assert e3.notes is None
+        assert rule_wpn.matches(e3) is False
+        assert rule_speaker.matches(e3) is False
+
+        # Test merge round-trip
+        e1.target = "A Shuraba egy démonkovácsolta kard."
+        adapter.merge(file_path, [e1])
+        merged = json.loads(file_path.read_text(encoding="utf-8"))
+        assert merged[0]["target"] == "A Shuraba egy démonkovácsolta kard."
+        assert merged[0]["context"] == "mm/mmWPN001_us.dat:mmWPN001.mcd"
+        assert merged[0]["speaker"] == "Rodin"
+
+

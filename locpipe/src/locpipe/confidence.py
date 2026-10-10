@@ -18,6 +18,57 @@ _SUFFIX_NEAR_PLACEHOLDER_RE = re.compile(
 )
 
 
+_PROPER_NOUN_EXCLUDE_WORDS = {
+    # Common English words that might be capitalized in sentence start or UI, but are NOT proper nouns
+    "the", "a", "an", "this", "that", "these", "those",
+    "is", "are", "was", "were", "be", "been", "have", "has", "had",
+    "you", "your", "we", "our", "they", "their", "it", "its", "he", "she",
+    "press", "select", "choose", "cancel", "confirm", "back", "next", "continue",
+    "start", "exit", "quit", "save", "load", "delete", "remove", "add", "new",
+    "warning", "error", "caution", "notice", "alert", "hint", "tip",
+    "yes", "no", "on", "off", "up", "down", "left", "right",
+}
+
+
+def is_plausible_proper_noun(text: str) -> bool:
+    """Detects short proper nouns, character names, weapon titles, or acronyms
+    (1-4 words) that legitimately remain identical in translation without being an untranslated sentence.
+
+    Examples matching:
+      - 'Rosa', 'Balder', 'Jeanne', 'Cereza', 'Rodin', 'Luka', 'Enzo'
+      - 'Chain Chomp', 'Inferno Slayer', 'All 4 One', 'Shuraba', 'Chernobog'
+      - 'OK', 'HP', 'MP', 'EXP', 'BGM', 'VIP', 'CPU', 'ID'
+
+    Examples NOT matching (must still be penalized if left in English):
+      - 'You must defeat the evil dragon.' (full sentence)
+      - 'Press button to jump' (has common lowercase verbs/nouns)
+      - 'Select an option' (common UI prompt)
+      - 'Warning: Core meltdown' (has lowercase/common word)
+    """
+    clean = text.strip()
+    if not clean or len(clean) > 40:
+        return False
+    if clean.endswith((".", "!", "?")):
+        return False
+    if "\n" in clean or "\r" in clean:
+        return False
+
+    words = clean.split()
+    if not (1 <= len(words) <= 4):
+        return False
+
+    for w in words:
+        w_strip = w.strip("\"'()[]{}.,:;-_#@*&")
+        if not w_strip:
+            continue
+        if w_strip.lower() in _PROPER_NOUN_EXCLUDE_WORDS:
+            return False
+        if not (w_strip[0].isupper() or w_strip[0].isdigit()):
+            return False
+
+    return True
+
+
 def has_suffix_near_placeholder(target: str) -> bool:
     """Heuristic detector: returns True if a protected token/placeholder is
     immediately followed by 1-3 lowercase Hungarian letters (a plausible case
@@ -93,7 +144,10 @@ def score(entry: Entry, validation: ValidationResult, config: Optional[object] =
         and not entry.extra.get("_expected_identity")
         and not re.match(r"^[\W\d_]+$", entry.source.strip())
     ):
-        s -= 0.4  # came back unchanged and nothing in the glossary says it should have
+        allow_proper = getattr(config, "allow_identical_proper_nouns", True)
+        is_proper = is_plausible_proper_noun(entry.source.strip()) if allow_proper else False
+        if not is_proper:
+            s -= 0.4  # came back unchanged and nothing in the glossary says it should have
 
     if entry.max_length and len(entry.target) > entry.max_length:
         s -= 0.3  # a real, known hard limit was exceeded -- always penalize this
@@ -169,8 +223,11 @@ def confidence_flags(entry: Entry, config: Optional[object] = None) -> list[str]
         and entry.target.strip() == entry.source.strip()
         and not entry.extra.get("_expected_identity")
     ):
-        FLAG_COUNTS["identical_to_source"] = FLAG_COUNTS.get("identical_to_source", 0) + 1
-        flags.append("translation is identical to source and nothing marks that as expected")
+        allow_proper = getattr(config, "allow_identical_proper_nouns", True)
+        is_proper = is_plausible_proper_noun(entry.source.strip()) if allow_proper else False
+        if not is_proper:
+            FLAG_COUNTS["identical_to_source"] = FLAG_COUNTS.get("identical_to_source", 0) + 1
+            flags.append("translation is identical to source and nothing marks that as expected")
 
     if entry.max_length and len(entry.target) > entry.max_length:
         FLAG_COUNTS["max_length_exceeded"] = FLAG_COUNTS.get("max_length_exceeded", 0) + 1

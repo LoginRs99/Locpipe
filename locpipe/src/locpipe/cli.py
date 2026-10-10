@@ -38,12 +38,12 @@ categories:
   - name: dialogue
     match_speaker_present: true
     needs_character_voice: true
-    batch_size: 200
+    batch_size: 100
     max_expansion_ratio: 1.8   # dialogue usually has room to run a bit longer
   - name: ui
     default: true
     needs_character_voice: false
-    batch_size: 200
+    batch_size: 120
     max_expansion_ratio: 1.4   # tighter: buttons/labels are the ones that actually clip
 
 provider:
@@ -84,18 +84,18 @@ resources:
 
 categories:
   - name: action
-    batch_size: 200
+    batch_size: 120
     max_expansion_ratio: 1.4
     default_max_length: 35
   - name: menu
-    batch_size: 200
+    batch_size: 120
     max_expansion_ratio: 1.4
   - name: dialog
-    batch_size: 150
+    batch_size: 100
     max_expansion_ratio: 1.8
   - name: ui
     default: true
-    batch_size: 200
+    batch_size: 120
     max_expansion_ratio: 1.5
 
 provider:
