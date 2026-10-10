@@ -25,17 +25,20 @@ flowchart TD
 
 ### Stage 1: Preflight Audit (Zero Cost)
 Always run audit first to verify extraction and noise filtering without calling any LLMs:
-```bash
-locpipe audit --project "locpipe/projects/<Project Name>"
+```powershell
+Set-Location "D:\github\GameStringer-main\locpipe"; python -m locpipe.cli audit --project "projects/<Project Name>"
 ```
 * Verify kept vs. engine-noise breakdown.
 * Ensure dialogue and UI strings are not mistakenly caught in noise filters.
-* **Category Alignment Check:** Inspect the category breakdown table in the audit output. If 100% of strings fall into the fallback default category, regex rules (`match_key_regex`, `match_notes_regex`) are misaligned with adapter keys/context! Fix the category regex rules before running translation, otherwise character voices and specialized expansion caps will be bypassed.
+
+> [!IMPORTANT]
+> **Pre-Flight Category Distribution Gate:**
+> Inspect the category breakdown table in the audit output. If 100% of strings land in the `default: true` category (e.g. `in_game_messages` or `ui`), your `match_key_regex` or `match_notes_regex` rules do NOT match the adapter's emitted keys. Fix the category regexes in `project.yaml` before running `locpipe run`, otherwise character voices and specialized expansion caps will be completely bypassed.
 
 ### Stage 2: Staged Canary Test (Mandatory Safety Checkpoint)
 Never execute a full unattended run on a new or modified project without a bounded canary test:
-```bash
-locpipe run --project "locpipe/projects/<Project Name>" --limit 1 --max-api-calls 20
+```powershell
+Set-Location "D:\github\GameStringer-main\locpipe"; python -m locpipe.cli run --project "projects/<Project Name>" --limit 1 --max-api-calls 20
 ```
 * Inspect sample lines (Source → Target).
 * Verify 1:1 array index alignment.
@@ -43,21 +46,21 @@ locpipe run --project "locpipe/projects/<Project Name>" --limit 1 --max-api-call
 * **STOP and report results to the human operator** before proceeding to the full run.
 
 ### Stage 3: Full Run Execution (Zero-Touch or External Terminal)
-Once approved, execute the full localization run:
+Once approved by the operator, execute the full localization run:
 * **Autonomous Single Command:**
-  ```bash
-  locpipe auto --project "locpipe/projects/<Project Name>"
+  ```powershell
+  Set-Location "D:\github\GameStringer-main\locpipe"; python -m locpipe.cli auto --project "projects/<Project Name>"
   ```
 * **External PowerShell Terminal (Recommended for large runs):**
-  Advise the user to run the process in an external PowerShell terminal to prevent subagent session flooding. Use this exact single-line command:
+  Run in an external PowerShell terminal window to prevent subagent session flooding:
   ```powershell
   Set-Location "D:\github\GameStringer-main\locpipe"; python -m locpipe.cli run --project "projects/<Project Name>"
   ```
 
 ### Stage 4: Post-Run Integrity Verification
 Prove that non-translatable engine noise and excluded asset paths were completely untouched:
-```bash
-locpipe verify --project "locpipe/projects/<Project Name>"
+```powershell
+Set-Location "D:\github\GameStringer-main\locpipe"; python -m locpipe.cli verify --project "projects/<Project Name>"
 ```
 
 ---
@@ -71,6 +74,14 @@ In production, GameStringer and LocPipe use **Google Gemini 3.8 Flash** via the 
 |---|---|---|---|---|
 | **Bulk Batch Translation** | `gemini-3.8-flash` | `effort: low` | `batch_size: 80-100` (dialogue)<br/>`batch_size: 120` (UI) | Ultra-fast throughput (~20-30s/call), zero truncation retries, cost-effective. |
 | **Review & Automated Repair** | `gemini-3.8-flash` | `effort: low` (fast/balanced) or `high` (thorough) | `review_chunk_size: 25-30` | `low` effort is sufficient for 95% of repairs; `high` is reserved for complex tone/escalation. |
+
+> [!IMPORTANT]
+> **Batch Size & Token Ceiling Invariant:**  
+> Sizing MUST satisfy:  
+> $$\text{Batch Size} \times \sim 100\text{ tokens (source + target + JSON envelope)} \le 12,000\text{ tokens}$$  
+> This enforces a mandatory **4,000-token safety buffer** under `max_output_tokens: 16384`.  
+> - **Dialogue, Cutscenes & In-Game Messages:** Mandate **80–100 entries**. Sizing at 150+ risks single-response output buffers exceeding 9,000 characters, triggering truncated JSON errors and wasted retries.  
+> - **Short UI Labels, Buttons & Menus:** Mandate **at most 120 entries**.
 
 ---
 
@@ -230,6 +241,22 @@ The following tokens must survive translation **100% byte-identical**:
 * Use punchy active verbs or concise nominal statements:
   * ✅ *"Új fegyver elérhető!"* or *"Feloldva!"*
   * ❌ *"Új fegyver fel lett oldva."*
+
+### Rule 7: Identity Terms & Proper Nouns in Glossary
+* When character names, fictional lore terms, acronyms, or UI codes must remain untranslated from English (e.g. *Balder*, *Rosa*, *Arwing*, *Shuraba*, *OK*, *ID*), register them explicitly in the project glossary (`resources/glossary.tsv` or `glossary.yaml`) or enable `allow_identical_proper_nouns: true` in `project.yaml`.
+* **The Root Cause:** LocPipe's confidence evaluator normally penalizes `target == source` strings by `-0.4` to detect untranslated leaks. Unregistered identity terms drop to confidence score `0.60`, falling below the review threshold (`0.65` / `0.70` / `0.75`) and flooding the LLM review queue with hundreds of false-positive review calls.
+* **Glossary Registration Format (`resources/glossary.tsv`):**
+  ```tsv
+  Balder	Balder	[identity] Character name, keep unchanged
+  Rosa	Rosa	[identity] Character name, keep unchanged
+  Arwing	Arwing	[identity] Starship name, keep unchanged
+  OK	OK	[identity] Standard UI button, keep unchanged
+  ```
+* **Project Configuration (`project.yaml`):**
+  ```yaml
+  confidence:
+    allow_identical_proper_nouns: true  # Mathematically protects Title-Case nouns, single-word names, and uppercase acronyms from the untranslated penalty
+  ```
 
 ---
 
