@@ -182,3 +182,9 @@ def test_verify_clean_run_and_corrupted_anomaly_detection(tmp_path: Path, capsys
     assert "ANOMALIES DETECTED" in out
     assert "internal_config" in out
     assert "CorruptedValue" in out
+
+    # 5. Run auto on corrupted project — must halt with non-zero exit code
+    exit_code_auto = cli_main(["auto", "--project", str(proj_dir), "--dry-run", "--skip-canary"])
+    out_auto = capsys.readouterr().out
+    assert exit_code_auto != 0
+    assert "Integrity verification detected anomalies" in out_auto

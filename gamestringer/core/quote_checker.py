@@ -80,8 +80,8 @@ def _analyze_quote_pair(src: str, tgt: str) -> List[tuple]:
     src_straight_doubles = src.count('"')
     tgt_straight_doubles = tgt.count('"')
 
-    has_hungarian_style = any(q in tgt for q in ("„", "”", "»", "«"))
-    has_curly_style = any(q in tgt for q in ("“", "”", "‘", "’"))
+    has_hungarian_style = any(q in tgt for q in ("„", "»", "«"))
+    has_curly_style = any(q in tgt for q in ("“", "‘", "’")) or ("”" in tgt and not has_hungarian_style)
 
     # 1. Unbalanced Quotes Detection
     if tgt_straight_doubles % 2 != 0:
@@ -91,7 +91,7 @@ def _analyze_quote_pair(src: str, tgt: str) -> List[tuple]:
 
     # 2. Missing Quotes Detection
     src_has_quotes = src_straight_doubles >= 2 or '"' in src or "“" in src or "„" in src
-    tgt_has_quotes = tgt_straight_doubles >= 1 or has_hungarian_style or has_curly_style
+    tgt_has_quotes = tgt_straight_doubles >= 1 or has_hungarian_style or has_curly_style or "”" in tgt
 
     if src_has_quotes and not tgt_has_quotes and not any(iss[0] == "unbalanced" for iss in issues):
         issues.append(("missing_quotes", "Source contains quotes but target has no quotes"))

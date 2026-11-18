@@ -49,6 +49,17 @@ def test_japanese_quote_balance_and_mapping():
     assert len(issues_book) == 0
 
 
+def test_quote_balance_multibox_dialogue_continuation():
+    # Multi-box dialogue continuation where source has an odd quote (opening or closing quote)
+    # matching quote in target must NOT be flagged as unbalanced error
+    issues_opening = audit_quote_pair('"Every time I killed an enemy soldier,', '"Valahányszor megöltem egy ellenséges katonát,')
+    assert not any(i.code == "QUOTE_UNBALANCED" for i in issues_opening)
+
+    # Source with balanced quotes but broken odd quote in target must still fail
+    issues_broken = audit_quote_pair('I killed an enemy soldier.', '"Valahányszor megöltem egy ellenséges katonát.')
+    assert any(i.code == "QUOTE_UNBALANCED" for i in issues_broken)
+
+
 def test_japanese_expansion_ratio_confidence():
     cfg_ja = ProjectConfig(
         project="test_ja",

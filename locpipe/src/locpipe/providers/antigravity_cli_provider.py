@@ -71,26 +71,38 @@ logger = logging.getLogger(__name__)
 _last_cleanup_ts: float = 0.0
 
 
-def _cleanup_antigravity_session(temp_prompt_path: str) -> None:
+def _cleanup_antigravity_session(temp_prompt_path: str, pre_call_dirs: set[str] | None = None) -> None:
     """Removes the temporary conversation directory in ~/.gemini/antigravity-cli/brain/
     AND the corresponding sqlite database in ~/.gemini/antigravity-cli/conversations/
     created by Antigravity CLI for this batch chunk prompt, keeping the session list clean.
-    Debounced process-wide to at most once every 600 seconds.
+    When pre_call_dirs is provided, targets only sessions created during this call (immediate, no debounce).
+    When pre_call_dirs is None, debounces fallback sweeps process-wide to at most once every 600s.
     """
     global _last_cleanup_ts
-    now = time.time()
-    if now - _last_cleanup_ts < 600.0:
-        return
-    _last_cleanup_ts = now
+    if pre_call_dirs is None:
+        now = time.time()
+        if now - _last_cleanup_ts < 600.0:
+            return
+        _last_cleanup_ts = now
 
     try:
         home_cli = Path.home() / ".gemini" / "antigravity-cli"
         brain_dir = home_cli / "brain"
         conv_dir = home_cli / "conversations"
+        summaries_db = home_cli / "conversation_summaries.db"
         temp_name = Path(temp_prompt_path).name
 
-        if brain_dir.is_dir():
-            # Check most recent sessions first; this batch's session was created in the last 15 minutes
+        if not brain_dir.is_dir():
+            return
+
+        if pre_call_dirs is not None:
+            current_dirs = set(d.name for d in brain_dir.iterdir() if d.is_dir())
+            candidate_sessions = [
+                (0.0, brain_dir / sid)
+                for sid in (current_dirs - pre_call_dirs)
+                if (brain_dir / sid).is_dir()
+            ]
+        else:
             recent_sessions = []
             now = time.time()
             for session_dir in brain_dir.iterdir():
@@ -103,42 +115,41 @@ def _cleanup_antigravity_session(temp_prompt_path: str) -> None:
                 except OSError:
                     pass
             recent_sessions.sort(key=lambda x: x[0], reverse=True)
+            candidate_sessions = recent_sessions
 
-            found_and_cleaned = False
-            for _, session_dir in recent_sessions:
-                transcript = session_dir / ".system_generated" / "logs" / "transcript.jsonl"
-                if transcript.exists():
+        for _, session_dir in candidate_sessions:
+            transcript = session_dir / ".system_generated" / "logs" / "transcript.jsonl"
+            is_ours = False
+            if transcript.exists():
+                try:
+                    with open(transcript, "r", encoding="utf-8", errors="ignore") as f:
+                        lines = [l.strip() for l in f if l.strip()]
+                    # One-shot headless batch calls only have <= 2 steps
+                    if lines and len(lines) <= 2:
+                        combined = " ".join(lines)
+                        if temp_name in combined or "locpipe_agy_prompt_" in combined:
+                            is_ours = True
+                except OSError:
+                    pass
+            if is_ours:
+                session_id = session_dir.name
+                shutil.rmtree(session_dir, ignore_errors=True)
+                if conv_dir.is_dir():
+                    for ext in ("", "-wal", "-shm"):
+                        extra = conv_dir / f"{session_id}.db{ext}"
+                        if extra.exists():
+                            try:
+                                extra.unlink()
+                            except OSError:
+                                pass
+                if summaries_db.exists():
                     try:
-                        with open(transcript, "r", encoding="utf-8", errors="ignore") as f:
-                            first_line = f.readline()
-                            if temp_name in first_line:
-                                session_id = session_dir.name
-                                shutil.rmtree(session_dir, ignore_errors=True)
-                                if conv_dir.is_dir():
-                                    db_file = conv_dir / f"{session_id}.db"
-                                    if db_file.exists():
-                                        try:
-                                            db_file.unlink()
-                                            for extra in [conv_dir / f"{session_id}.db-wal", conv_dir / f"{session_id}.db-shm"]:
-                                                if extra.exists():
-                                                    extra.unlink()
-                                        except Exception:
-                                            pass
-                                summaries_db = home_cli / "conversation_summaries.db"
-                                if summaries_db.exists():
-                                    try:
-                                        import sqlite3
-                                        with sqlite3.connect(str(summaries_db), timeout=5) as conn:
-                                            conn.execute("DELETE FROM conversation_summaries WHERE conversation_id = ?", (session_id,))
-                                            conn.commit()
-                                    except Exception:
-                                        pass
-                                found_and_cleaned = True
-                                break
+                        import sqlite3
+                        with sqlite3.connect(str(summaries_db), timeout=5) as conn:
+                            conn.execute("DELETE FROM conversation_summaries WHERE conversation_id = ?", (session_id,))
+                            conn.commit()
                     except Exception:
                         pass
-                if found_and_cleaned:
-                    break
     except Exception:
         pass
 
@@ -252,6 +263,11 @@ class AntigravityCLIProvider(TranslationProvider):
         last_exit_code = None
         last_stderr = ""
         last_stdout = ""
+
+        # Snapshot brain directories before running agy so only newly spawned sessions are cleaned up
+        home_cli = Path.home() / ".gemini" / "antigravity-cli"
+        brain_dir = home_cli / "brain"
+        pre_call_dirs = set(d.name for d in brain_dir.iterdir() if d.is_dir()) if brain_dir.is_dir() else set()
 
         try:
             for attempt in range(max_attempts):
@@ -406,7 +422,7 @@ class AntigravityCLIProvider(TranslationProvider):
                     os.unlink(temp_prompt_path)
                 except Exception:
                     pass
-            _cleanup_antigravity_session(temp_prompt_path)
+            _cleanup_antigravity_session(temp_prompt_path, pre_call_dirs=pre_call_dirs)
 
     async def complete(
         self,

@@ -4,6 +4,7 @@ version = "2.0.0"
 description = "Deterministic, multi-project localization pipeline. LLM translates and repairs; Python does everything else."
 requires-python = ">=3.10"
 dependencies = [
+    "click>=8.0.0",
     "pyyaml>=6.0",
     "jsonschema>=4.20",
     "polib>=1.2",

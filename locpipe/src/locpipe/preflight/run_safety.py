@@ -96,23 +96,50 @@ def sweep_orphaned_agy_artifacts(max_age_s: int = 3600) -> Dict[str, int]:
         if transcript.exists():
             try:
                 with open(transcript, "r", encoding="utf-8", errors="ignore") as f:
-                    for _ in range(10):
-                        line = f.readline()
-                        if not line:
-                            break
-                        if "locpipe_agy_prompt_" in line:
-                            return True
+                    lines = [line.strip() for line in f if line.strip()]
+                # Headless locpipe batch calls are one-shot single-turn runs (step 0 USER_INPUT, step 1 MODEL response).
+                # Any session with > 2 steps or interactive conversation turns is an interactive user chat and MUST NOT be deleted.
+                if not lines or len(lines) > 2:
+                    return False
+                combined = " ".join(lines)
+                if "locpipe_agy_prompt_" in combined:
+                    return True
             except OSError:
                 pass
         return False
 
     def _is_locpipe_db(db_p: Path) -> bool:
+        session_id = db_p.stem
+        # If the brain directory exists for this session, check it first.
+        # If brain_dir exists and is NOT a locpipe session dir (e.g. it's a user chat),
+        # NEVER delete its conversation db!
+        s_dir = brain_dir / session_id
+        if s_dir.exists():
+            return False
+
         try:
             with open(db_p, "rb") as f:
-                chunk = f.read(65536)
-                if b"locpipe_agy_prompt_" in chunk:
-                    return True
-        except OSError:
+                header = f.read(16)
+            if header.startswith(b"SQLite format 3"):
+                import sqlite3
+                with sqlite3.connect(f"file:{db_p}?mode=ro", uri=True) as conn:
+                    cur = conn.cursor()
+                    cur.execute("SELECT count(*) FROM sqlite_master WHERE type='table' AND name='steps'")
+                    if cur.fetchone()[0] > 0:
+                        cur.execute("SELECT count(*) FROM steps")
+                        count = cur.fetchone()[0]
+                        if count > 2:
+                            return False  # Multi-turn user conversation!
+                        cur.execute("SELECT content FROM steps")
+                        rows = cur.fetchall()
+                        all_content = " ".join(r[0] or "" for r in rows)
+                        return "locpipe_agy_prompt_" in all_content and ("Output ONLY the" in all_content or "from prompt file:" in all_content)
+            else:
+                # Non-sqlite file or test mock
+                with open(db_p, "rb") as f:
+                    chunk = f.read(65536)
+                    return b"locpipe_agy_prompt_" in chunk and b"user_chat" not in db_p.name.encode()
+        except Exception:
             pass
         return False
 

@@ -27,7 +27,12 @@ def calculate_crc32(file_path: str) -> int:
     return crc & 0xFFFFFFFF
 
 
-def auto_update_addressables_crc(game_dir: str, modified_files: List[str]) -> List[str]:
+def auto_update_addressables_crc(
+    game_dir: str,
+    modified_files: List[str],
+    catalogs: Optional[List[str]] = None,
+    hash_files: Optional[List[str]] = None,
+) -> List[str]:
     """
     Search for catalog.json or *.hash files in game_dir and update CRC32 entries for modified files.
 
@@ -41,18 +46,18 @@ def auto_update_addressables_crc(game_dir: str, modified_files: List[str]) -> Li
     if os.path.isfile(base_dir):
         base_dir = os.path.dirname(base_dir)
 
-    # Find catalog.json or *.hash files
-    catalogs = []
-    hash_files = []
-
-    for root, _, files in os.walk(base_dir):
-        for f in files:
-            full = os.path.join(root, f)
-            fl = f.lower()
-            if (fl == "catalog.json" or (fl.startswith("catalog_") and fl.endswith(".json"))) and ".bak" not in fl:
-                catalogs.append(full)
-            elif fl.endswith(".hash") and ".bak" not in fl:
-                hash_files.append(full)
+    # Find catalog.json or *.hash files if not pre-supplied
+    if catalogs is None or hash_files is None:
+        catalogs = []
+        hash_files = []
+        for root, _, files in os.walk(base_dir):
+            for f in files:
+                full = os.path.join(root, f)
+                fl = f.lower()
+                if (fl == "catalog.json" or (fl.startswith("catalog_") and fl.endswith(".json"))) and ".bak" not in fl:
+                    catalogs.append(full)
+                elif fl.endswith(".hash") and ".bak" not in fl:
+                    hash_files.append(full)
 
     if not catalogs and not hash_files:
         return updates_log
@@ -145,24 +150,22 @@ def fix_catalog_crc_command(input_path: str) -> Dict[str, Any]:
     base_dir = os.path.dirname(os.path.abspath(input_path)) if os.path.isfile(input_path) else os.path.abspath(input_path)
 
     bundle_files = []
-    for root, _, files in os.walk(base_dir):
-        for f in files:
-            full = os.path.join(root, f)
-            fl = f.lower()
-            ext = os.path.splitext(f)[1].lower()
-            if ext in (".bundle", ".assets", ".asset") or fl.startswith("sharedassets"):
-                if ".bak" not in fl:
-                    bundle_files.append(full)
-
     catalogs = []
     hash_files = []
+
+    # Single filesystem traversal to collect bundles, catalogs, and hash files
     for root, _, files in os.walk(base_dir):
         for f in files:
             full = os.path.join(root, f)
             fl = f.lower()
-            if (fl == "catalog.json" or (fl.startswith("catalog_") and fl.endswith(".json"))) and ".bak" not in fl:
+            if ".bak" in fl:
+                continue
+            ext = os.path.splitext(f)[1].lower()
+            if ext in (".bundle", ".assets", ".asset") or fl.startswith("sharedassets"):
+                bundle_files.append(full)
+            elif (fl == "catalog.json" or (fl.startswith("catalog_") and fl.endswith(".json"))):
                 catalogs.append(full)
-            elif fl.endswith(".hash") and ".bak" not in fl:
+            elif fl.endswith(".hash"):
                 hash_files.append(full)
 
     if not catalogs and not hash_files:
@@ -170,7 +173,7 @@ def fix_catalog_crc_command(input_path: str) -> Dict[str, Any]:
         logger.warning(msg)
         return {"catalog_found": False, "updated_files": [], "catalogs": [], "message": msg}
 
-    updates_log = auto_update_addressables_crc(base_dir, bundle_files)
+    updates_log = auto_update_addressables_crc(base_dir, bundle_files, catalogs=catalogs, hash_files=hash_files)
 
     updated_files = []
     for msg in updates_log:

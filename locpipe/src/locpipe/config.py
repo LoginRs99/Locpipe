@@ -238,6 +238,7 @@ class ProjectConfig:
     # (~350 entries); raise it for projects with many small files, lower
     # it if memory is tight or you want to see files land sooner.
     translate_file_window: int = 8
+    cross_file_pooling: bool = False
     preflight: "PreflightConfig" = field(default_factory=lambda: PreflightConfig())
     gate_naturalness: bool = False
     allow_identical_proper_nouns: bool = True
@@ -389,6 +390,7 @@ def load_project(project_dir: str | Path) -> ProjectConfig:
         max_source_len_for_low=int(confidence_raw.get("max_source_len_for_low", 250)),
         review_chunk_size=int(confidence_raw.get("review_chunk_size", prof["review_chunk_size"])),
         translate_file_window=raw.get("translate_file_window", 8),
+        cross_file_pooling=bool(raw.get("cross_file_pooling", False)),
         preflight=preflight,
         gate_naturalness=raw.get("gate_naturalness", False),
         allow_identical_proper_nouns=bool(confidence_raw.get("allow_identical_proper_nouns", True)),

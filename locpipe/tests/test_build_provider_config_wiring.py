@@ -48,6 +48,20 @@ def test_antigravity_cli_provider_gets_configured_sync_timeout(tmp_path: Path) -
         assert custom_provider.timeout_s == 123
 
 
+def test_build_provider_default_dry_run_and_effort_override(tmp_path: Path) -> None:
+    project_dir = _init_project(tmp_path)
+    config = load_project(project_dir)
+
+    with patch("locpipe.providers.antigravity_cli_provider._BINARY", "/fake/agy"):
+        # Calling with just config must not raise TypeError (dry_run defaults to False)
+        provider = _build_provider(config)
+        assert provider.effort == "low"
+
+        # Calling with effort_override as keyword arg must succeed
+        provider_high = _build_provider(config, effort_override="high")
+        assert provider_high.effort == "high"
+
+
 def test_unsupported_provider_raises_on_config_load(tmp_path: Path) -> None:
     import pytest
     project_dir = _init_project(tmp_path)

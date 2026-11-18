@@ -16,8 +16,8 @@ from typing import List, Tuple
 
 from ..models import Severity, ValidationIssue
 
-_HU_QUOTE_CHARS = ("„", "”", "»", "«")
-_CURLY_QUOTE_CHARS = ("“", "”", "‘", "’")
+_HU_QUOTE_CHARS = ("„", "»", "«")
+_CURLY_QUOTE_CHARS = ("“", "‘", "’")
 _JA_QUOTE_CHARS = ("「", "」", "『", "』")
 
 
@@ -30,14 +30,16 @@ def _analyze_quote_pair(src: str, tgt: str) -> List[Tuple[str, str]]:
     tgt_straight_doubles = tgt.count('"')
 
     has_hungarian_style = any(q in tgt for q in _HU_QUOTE_CHARS)
-    has_curly_style = any(q in tgt for q in _CURLY_QUOTE_CHARS)
+    has_curly_style = any(q in tgt for q in _CURLY_QUOTE_CHARS) or ("”" in tgt and not has_hungarian_style)
     has_ja_style_tgt = any(q in tgt for q in _JA_QUOTE_CHARS)
     has_ja_style_src = any(q in src for q in _JA_QUOTE_CHARS)
 
     if tgt_straight_doubles % 2 != 0:
-        issues.append(("unbalanced", "Unbalanced straight double quotes in target"))
+        if src_straight_doubles % 2 == 0:
+            issues.append(("unbalanced", "Unbalanced straight double quotes in target"))
     elif ("„" in tgt and "”" not in tgt and '"' not in tgt) or ("“" in tgt and "”" not in tgt and '"' not in tgt):
-        issues.append(("unbalanced", "Missing closing quote for opening quote in target"))
+        if src_straight_doubles % 2 == 0 and not any(q in src for q in _HU_QUOTE_CHARS + _CURLY_QUOTE_CHARS + ("”",)):
+            issues.append(("unbalanced", "Missing closing quote for opening quote in target"))
 
     if tgt.count("「") != tgt.count("」"):
         issues.append(("unbalanced", "Unbalanced Japanese corner brackets 「...」 in target"))
@@ -45,7 +47,7 @@ def _analyze_quote_pair(src: str, tgt: str) -> List[Tuple[str, str]]:
         issues.append(("unbalanced", "Unbalanced Japanese white corner brackets 『...』 in target"))
 
     src_has_quotes = src_straight_doubles >= 2 or '"' in src or "“" in src or "„" in src or has_ja_style_src
-    tgt_has_quotes = tgt_straight_doubles >= 1 or has_hungarian_style or has_curly_style or has_ja_style_tgt
+    tgt_has_quotes = tgt_straight_doubles >= 1 or has_hungarian_style or has_curly_style or has_ja_style_tgt or "”" in tgt
 
     if src_has_quotes and not tgt_has_quotes and not any(iss[0] == "unbalanced" for iss in issues):
         issues.append(("missing_quotes", "Source contains quotes but target has no quotes"))

@@ -179,7 +179,7 @@ def cmd_init(args: argparse.Namespace) -> int:
 
 def _build_provider(
     config,
-    dry_run: bool,
+    dry_run: bool = False,
     pseudo_loc: bool = False,
     model_override: str | None = None,
     effort_override: str | None = None,
@@ -289,7 +289,7 @@ def cmd_audit(args: argparse.Namespace) -> int:
         provider = (
             MockProvider()
             if getattr(args, "dry_run", False)
-            else _build_provider(config, effort_override="low")
+            else _build_provider(config, dry_run=getattr(args, "dry_run", False), effort_override="low")
         )
         try:
             sugg = asyncio.run(analyze_project_and_suggest(config, provider))
@@ -679,7 +679,10 @@ def cmd_auto(args: argparse.Namespace) -> int:
     # Stage 4: Post-Run Verification
     print("\n[Stage 4/4] Executing Post-Run Integrity Verification...")
     verify_args = argparse.Namespace(project=str(proj_path))
-    cmd_verify(verify_args)
+    verify_ret = cmd_verify(verify_args)
+    if verify_ret != 0:
+        print("❌ Integrity verification detected anomalies or errors. Please check review/.")
+        return verify_ret
 
     print("\n==================================================================")
     print(f"🎉 ZERO-TOUCH LOCALIZATION COMPLETED FOR: {config.project}")

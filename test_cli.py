@@ -156,6 +156,7 @@ def test_cli_commands():
         assert res_help.exit_code == 0
         assert "plan" in res_help.output
         assert "run" in res_help.output
+        assert "auto" in res_help.output
         assert "audit" in res_help.output
         assert "verify" in res_help.output
         assert "gui" in res_help.output

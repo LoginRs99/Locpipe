@@ -259,3 +259,30 @@ def test_cli_fix_catalog_success_and_warning(tmp_path):
     res_ok = runner.invoke(main, ["--verbose", "fix-catalog", "--input", str(tmp_path)])
     assert res_ok.exit_code == 0
     assert "[SUCCESS]" in res_ok.output
+
+
+# ==========================================
+# Quote Checker Tests (Hungarian vs Curly)
+# ==========================================
+
+def test_quote_checker_distinguishes_hungarian_and_curly():
+    from gamestringer.core.quote_checker import _analyze_quote_pair
+    from locpipe.validators.quote_balance import audit_quote_pair
+
+    # 1. Hungarian quotes: „...”
+    hu_issues = _analyze_quote_pair('Attack "now"', 'Támadj „most”')
+    assert any("Hungarian quotes" in rec for _, rec in hu_issues)
+    assert not any("curly quotes" in rec for _, rec in hu_issues)
+
+    # 2. English curly quotes: “...”
+    curly_issues = _analyze_quote_pair('Attack "now"', 'Attack “now”')
+    assert any("curly quotes" in rec for _, rec in curly_issues)
+    assert not any("Hungarian quotes" in rec for _, rec in curly_issues)
+
+    # 3. Same check in locpipe validator audit_quote_pair
+    val_hu = audit_quote_pair('Attack "now"', 'Támadj „most”')
+    assert any("Hungarian quotes" in iss.message for iss in val_hu)
+
+    val_curly = audit_quote_pair('Attack "now"', 'Attack “now”')
+    assert any("curly quotes" in iss.message for iss in val_curly)
+    assert not any("Hungarian quotes" in iss.message for iss in val_curly)

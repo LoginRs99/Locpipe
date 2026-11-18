@@ -80,6 +80,23 @@ def test_sweep_orphaned_agy_artifacts_with_conversations(monkeypatch):
         fresh_temp.write_text("fresh prompt")
         os.utime(fresh_temp, (fresh_time, fresh_time))
 
+        # 6. User multi-turn coding chat that DISCUSSES locpipe_agy_prompt_: MUST NEVER be deleted!
+        user_locpipe_chat_brain = brain_dir / "user_chat_discussing_locpipe"
+        user_locpipe_chat_brain.mkdir()
+        user_locpipe_logs = user_locpipe_chat_brain / ".system_generated" / "logs"
+        user_locpipe_logs.mkdir(parents=True)
+        user_locpipe_logs_content = "\n".join([
+            json.dumps({"step_index": 0, "content": "Can you inspect locpipe_agy_prompt_stale.txt for me?"}),
+            json.dumps({"step_index": 1, "content": "Sure, here are the contents of that prompt file."}),
+            json.dumps({"step_index": 2, "content": "Thanks, now let's write a unit test."}),
+        ])
+        (user_locpipe_logs / "transcript.jsonl").write_text(user_locpipe_logs_content)
+        os.utime(user_locpipe_chat_brain, (stale_time, stale_time))
+
+        user_locpipe_chat_db = conv_dir / "user_chat_discussing_locpipe.db"
+        user_locpipe_chat_db.write_text("dummy db mentioning locpipe_agy_prompt_stale.txt in conversation")
+        os.utime(user_locpipe_chat_db, (stale_time, stale_time))
+
         res = sweep_orphaned_agy_artifacts(max_age_s=3600)
 
         assert res["removed_temp_files"] == 1
@@ -99,9 +116,11 @@ def test_sweep_orphaned_agy_artifacts_with_conversations(monkeypatch):
         assert sess3_db.exists()
         assert fresh_temp.exists()
 
-        # CRITICAL SAFETY CHECK: Verify user session was NOT deleted!
+        # CRITICAL SAFETY CHECK: Verify user sessions were NOT deleted!
         assert user_stale_brain.exists()
         assert user_stale_db.exists()
+        assert user_locpipe_chat_brain.exists(), "User multi-turn chat discussing locpipe prompt was wrongly deleted!"
+        assert user_locpipe_chat_db.exists(), "User multi-turn chat DB was wrongly deleted!"
 
 
 def test_load_glossary_json_bare_list(tmp_path):

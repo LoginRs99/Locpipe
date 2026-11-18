@@ -380,7 +380,11 @@ class UABEAJsonAdapter(FormatAdapter):
                     # Project-specific denylist: skips this field entirely,
                     # and -- since the check happens before we look at type --
                     # skips descending into a matched dict/list subtree too.
-                    if self._exclude_patterns and any(p.search(full_path_str) for p in self._exclude_patterns):
+                    combined_str = f"{asset_name}:{full_path_str}"
+                    if self._exclude_patterns and any(
+                        p.search(full_path_str) or p.search(asset_name) or p.search(combined_str)
+                        for p in self._exclude_patterns
+                    ):
                         if audit_sink is not None:
                             if isinstance(v, str) and v.strip():
                                 audit_sink.append((full_path_str, v, "excluded_by_config"))
@@ -420,7 +424,11 @@ class UABEAJsonAdapter(FormatAdapter):
                 for idx, item in enumerate(obj):
                     full_path = path_stack + [str(idx)]
                     full_path_str = ".".join(full_path)
-                    if self._exclude_patterns and any(p.search(full_path_str) for p in self._exclude_patterns):
+                    combined_str = f"{asset_name}:{full_path_str}"
+                    if self._exclude_patterns and any(
+                        p.search(full_path_str) or p.search(asset_name) or p.search(combined_str)
+                        for p in self._exclude_patterns
+                    ):
                         if audit_sink is not None:
                             if isinstance(item, str) and item.strip():
                                 audit_sink.append((full_path_str, item, "excluded_by_config"))

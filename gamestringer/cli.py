@@ -82,6 +82,12 @@ try:
         """Execute translation pipeline (via locpipe)."""
         _proxy_to_locpipe("run", ctx.args)
 
+    @main.command(name="auto", context_settings=dict(ignore_unknown_options=True, allow_extra_args=True))
+    @click.pass_context
+    def auto_cmd(ctx):
+        """Zero-touch autonomous localization: audit, canary, run, verify (via locpipe)."""
+        _proxy_to_locpipe("auto", ctx.args)
+
     @main.command(name="audit", context_settings=dict(ignore_unknown_options=True, allow_extra_args=True))
     @click.pass_context
     def audit_cmd(ctx):
@@ -135,7 +141,7 @@ except ImportError:
         subparsers.add_parser("gui")
 
         # locpipe bridged commands
-        for cmd_name in ("plan", "run", "audit", "verify", "init", "tm-invalidate", "bootstrap-resources"):
+        for cmd_name in ("plan", "run", "auto", "audit", "verify", "init", "tm-invalidate", "bootstrap-resources"):
             subparsers.add_parser(cmd_name)
 
         args, rest = parser.parse_known_args()
@@ -151,7 +157,7 @@ except ImportError:
         elif args.command == "gui":
             from gamestringer.desktop_gui.app import main as main_desktop_gui
             main_desktop_gui()
-        elif args.command in ("plan", "run", "audit", "verify", "init", "tm-invalidate", "bootstrap-resources"):
+        elif args.command in ("plan", "run", "auto", "audit", "verify", "init", "tm-invalidate", "bootstrap-resources"):
             from locpipe.cli import main as locpipe_main
             sys.exit(locpipe_main([args.command] + rest))
         else:

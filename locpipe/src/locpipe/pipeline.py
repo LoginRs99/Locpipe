@@ -843,9 +843,7 @@ def run(
 
                 dedupe_result = enrich_and_dedupe(file_entries, tm, config.source_lang, config.target_lang)
                 tm_hits += dedupe_result.tm_hits
-                unique_sent_to_llm += dedupe_result.total_unique_strings_to_translate
                 dedupe_result_by_file[str(path)] = dedupe_result
-                all_batches.extend(build_batches(dedupe_result.unique_groups, config, provider))
             except Exception as e:
                 # Circuit breaker, extraction phase: a malformed input file
                 # (bad JSON, unreadable encoding, whatever) must not stop
@@ -859,6 +857,29 @@ def run(
                     f"will retry on the next run: {type(e).__name__}: {e}"
                 )
                 continue
+
+        # Batch construction: optionally pooled across files or per-file
+        pooled_unique_groups: dict[str, list[Entry]] = {}
+        if config.cross_file_pooling:
+            for path in pending_files:
+                key = str(path)
+                if key not in dedupe_result_by_file:
+                    continue
+                d_res = dedupe_result_by_file[key]
+                for tm_key, group in d_res.unique_groups.items():
+                    pooled_unique_groups.setdefault(tm_key, []).extend(group)
+
+            unique_sent_to_llm = len(pooled_unique_groups)
+            all_batches = build_batches(pooled_unique_groups, config, provider)
+        else:
+            all_batches = []
+            for path in pending_files:
+                key = str(path)
+                if key not in dedupe_result_by_file:
+                    continue
+                d_res = dedupe_result_by_file[key]
+                unique_sent_to_llm += d_res.total_unique_strings_to_translate
+                all_batches.extend(build_batches(d_res.unique_groups, config, provider))
 
         if all_batches:
             print(f"{len(all_batches)} LLM call(s) needed ({checkpoint.progress_summary()} already on record)")
@@ -912,18 +933,33 @@ def run(
 
         llm_calls_made = len(all_batches)
 
+        # Propagate batch results to all entries
+        if config.cross_file_pooling:
+            for tm_key, group in pooled_unique_groups.items():
+                rep = group[0]
+                if rep.status != EntryStatus.NOT_STARTED:
+                    for e in group[1:]:
+                        e.target = rep.target
+                        e.status = rep.status
+                        e.origin = rep.origin
+        else:
+            for path in pending_files:
+                key = str(path)
+                if key not in dedupe_result_by_file:
+                    continue
+                d_res = dedupe_result_by_file[key]
+                for tm_key, group in d_res.unique_groups.items():
+                    rep = group[0]
+                    for e in group[1:]:
+                        e.target = rep.target
+                        e.status = rep.status
+                        e.origin = rep.origin
+
         for path in pending_files:
             if str(path) not in entries_by_file:
                 continue  # already logged and counted as unfinished in the extraction loop above
 
             file_entries = entries_by_file[str(path)]
-            dedupe_result = dedupe_result_by_file[str(path)]
-            for tm_key, group in dedupe_result.unique_groups.items():
-                rep = group[0]
-                for e in group[1:]:
-                    e.target = rep.target
-                    e.status = rep.status
-                    e.origin = rep.origin
 
             # is_empty_or_stub excludes entries that were already translated
             # (human-provided) at extraction time -- those never entered
@@ -1016,12 +1052,8 @@ def run(
 
                     dedupe_result = enrich_and_dedupe(file_entries, tm, config.source_lang, config.target_lang)
                     tm_hits += dedupe_result.tm_hits
-                    unique_sent_to_llm += dedupe_result.total_unique_strings_to_translate
-
-                    file_batches = build_batches(dedupe_result.unique_groups, config, provider)
                     file_entries_by_path[str(path)] = file_entries
                     dedupe_by_path[str(path)] = dedupe_result
-                    window_batches.extend(file_batches)
                 except Exception as e:
                     # Same circuit-breaker principle as the batch-mode branch
                     # above: a malformed file must not stop this window's
@@ -1032,6 +1064,29 @@ def run(
                         f"will retry on the next run: {type(e).__name__}: {e}"
                     )
                     continue
+
+            # Batch construction: optionally pooled across window files or per-file
+            pooled_unique_groups: dict[str, list[Entry]] = {}
+            if config.cross_file_pooling:
+                for path in window_files:
+                    key = str(path)
+                    if key not in dedupe_by_path:
+                        continue
+                    d_res = dedupe_by_path[key]
+                    for tm_key, group in d_res.unique_groups.items():
+                        pooled_unique_groups.setdefault(tm_key, []).extend(group)
+
+                unique_sent_to_llm += len(pooled_unique_groups)
+                window_batches = build_batches(pooled_unique_groups, config, provider)
+            else:
+                window_batches = []
+                for path in window_files:
+                    key = str(path)
+                    if key not in dedupe_by_path:
+                        continue
+                    d_res = dedupe_by_path[key]
+                    unique_sent_to_llm += d_res.total_unique_strings_to_translate
+                    window_batches.extend(build_batches(d_res.unique_groups, config, provider))
 
             if window_batches:
                 print(
@@ -1047,19 +1102,34 @@ def run(
             wasted_retry_attempts += wasted
             partial_recovery_calls += part_calls
 
+            # Propagate translations to duplicate entries
+            if config.cross_file_pooling:
+                for tm_key, group in pooled_unique_groups.items():
+                    rep = group[0]
+                    if rep.status != EntryStatus.NOT_STARTED:
+                        for e in group[1:]:
+                            e.target = rep.target
+                            e.status = rep.status
+                            e.origin = rep.origin
+            else:
+                for path in window_files:
+                    key = str(path)
+                    if key not in dedupe_by_path:
+                        continue
+                    d_res = dedupe_by_path[key]
+                    for tm_key, group in d_res.unique_groups.items():
+                        rep = group[0]
+                        for e in group[1:]:
+                            e.target = rep.target
+                            e.status = rep.status
+                            e.origin = rep.origin
+
             for path in window_files:
                 key = str(path)
                 if key not in file_entries_by_path:
                     continue  # already logged and counted as unfinished above
 
                 file_entries = file_entries_by_path[key]
-                dedupe_result = dedupe_by_path[key]
-                for tm_key, group in dedupe_result.unique_groups.items():
-                    rep = group[0]
-                    for e in group[1:]:
-                        e.target = rep.target
-                        e.status = rep.status
-                        e.origin = rep.origin
 
                 unresolved = [e for e in file_entries if e.is_empty_or_stub and e.status == EntryStatus.NOT_STARTED]
                 if unresolved:
@@ -1222,19 +1292,49 @@ def plan(
 
         # Pass 2: PENDING files only — these are what a real run() would actually
         # process, so the LLM call count and token estimates reflect remaining work.
-        for path in pending_files:
-            file_entries = adapter.extract(path)
-            classify_entries(file_entries, config, known_characters)
-            flag_disputed_terms(file_entries, glossary)
-            flag_expected_identity_terms(file_entries, glossary)
-            attach_narrative_context(file_entries, config)
+        if config.cross_file_pooling:
+            window_size = len(pending_files) if config.provider.mode == "batch" else max(1, config.translate_file_window)
+            for w_start in range(0, len(pending_files), window_size):
+                window_files = pending_files[w_start : w_start + window_size]
+                pooled_unique_groups: dict[str, list[Entry]] = {}
 
-            dedupe_result = enrich_and_dedupe(file_entries, tm, config.source_lang, config.target_lang)
-            tm_hits += dedupe_result.tm_hits
-            unique_strings_needing_translation += dedupe_result.total_unique_strings_to_translate
+                for path in window_files:
+                    file_entries = adapter.extract(path)
+                    classify_entries(file_entries, config, known_characters)
+                    flag_disputed_terms(file_entries, glossary)
+                    flag_expected_identity_terms(file_entries, glossary)
+                    attach_narrative_context(file_entries, config)
 
-            file_batches = build_batches(dedupe_result.unique_groups, config, provider)
-            all_batches.extend(file_batches)
+                    dedupe_result = enrich_and_dedupe(file_entries, tm, config.source_lang, config.target_lang)
+                    tm_hits += dedupe_result.tm_hits
+
+                    for tm_key, group in dedupe_result.unique_groups.items():
+                        pooled_unique_groups.setdefault(tm_key, []).extend(group)
+
+                unique_strings_needing_translation += len(pooled_unique_groups)
+                window_batches = build_batches(pooled_unique_groups, config, provider)
+                all_batches.extend(window_batches)
+
+                # Seed in-memory TM with simulated translations so subsequent windows reflect TM hits
+                simulated_reps = [g[0] for g in pooled_unique_groups.values()]
+                for r in simulated_reps:
+                    r.target = "[simulated]"
+                    r.status = EntryStatus.VALIDATED
+                commit_to_tm(simulated_reps, tm, config.source_lang, config.target_lang, origin="mt")
+        else:
+            for path in pending_files:
+                file_entries = adapter.extract(path)
+                classify_entries(file_entries, config, known_characters)
+                flag_disputed_terms(file_entries, glossary)
+                flag_expected_identity_terms(file_entries, glossary)
+                attach_narrative_context(file_entries, config)
+
+                dedupe_result = enrich_and_dedupe(file_entries, tm, config.source_lang, config.target_lang)
+                tm_hits += dedupe_result.tm_hits
+                unique_strings_needing_translation += dedupe_result.total_unique_strings_to_translate
+
+                file_batches = build_batches(dedupe_result.unique_groups, config, provider)
+                all_batches.extend(file_batches)
     finally:
         tm.close()
 
